@@ -61,6 +61,57 @@ def new_customer():
 
     return render_template("customers/form.html")
 
+@app.route("/customers/<int:customer_id>/edit", methods=["GET", "POST"])
+def edit_customer(customer_id):
+    connection = get_connection()
+
+    if request.method == "POST":
+        company_name = request.form.get("company_name", "").strip()
+        contact_person = request.form.get("contact_person", "").strip()
+        tax_id = request.form.get("tax_id", "").strip()
+        phone = request.form.get("phone", "").strip()
+        category = request.form.get("category", "一般").strip()
+
+        if not company_name:
+            connection.close()
+            return "客戶名稱為必填欄位", 400
+
+        connection.execute("""
+            UPDATE customers
+            SET company_name = ?,
+                contact_person = ?,
+                tax_id = ?,
+                phone = ?,
+                category = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (
+            company_name,
+            contact_person,
+            tax_id,
+            phone,
+            category,
+            customer_id
+        ))
+
+        connection.commit()
+        connection.close()
+
+        return redirect("/customers")
+
+    customer = connection.execute("""
+        SELECT id, company_name, contact_person, tax_id, phone, category
+        FROM customers
+        WHERE id = ? AND is_active = 1
+    """, (customer_id,)).fetchone()
+
+    connection.close()
+
+    if customer is None:
+        return "找不到此客戶", 404
+
+    return render_template("customers/form.html", customer=customer)
+
 @app.route("/db-test")
 def db_test():
     return {
