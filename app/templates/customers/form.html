@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>新增客戶 | PrintShop</title>
+    <title>{{ '編輯客戶' if customer else '新增客戶' }} | PrintShop</title>
 
     <style>
         * {
@@ -165,13 +165,15 @@
 <main class="container">
 
     <section class="page-header">
-        <h1 class="page-title">新增客戶</h1>
-        <p class="description">建立客戶的基本資料。</p>
+        <h1 class="page-title">{{ '編輯客戶' if customer else '新增客戶' }}</h1>
+        <p class="description">
+            {{ '修改客戶的基本資料。' if customer else '建立客戶的基本資料。' }}
+        </p>
     </section>
 
     <section class="panel">
 
-        <form method="POST">
+        <form method="POST" action="{{ url_for('edit_customer', customer_id=customer['id']) if customer else url_for('new_customer') }}">
 
             <div class="form-grid">
 
@@ -186,6 +188,7 @@
                         name="company_name"
                         required
                         placeholder="例如：廣達數位印刷"
+                        value="{{ customer['company_name'] if customer else '' }}"
                     >
                 </div>
 
@@ -199,6 +202,7 @@
                         id="contact_person"
                         name="contact_person"
                         placeholder="例如：王小明"
+                        value="{{ customer['contact_person'] if customer else '' }}"
                     >
                 </div>
 
@@ -213,6 +217,7 @@
                         name="tax_id"
                         maxlength="8"
                         placeholder="例如：12345678"
+                        value="{{ customer['tax_id'] if customer else '' }}"
                     >
                 </div>
 
@@ -226,6 +231,7 @@
                         id="phone"
                         name="phone"
                         placeholder="例如：05-1234567"
+                        value="{{ customer['phone'] if customer else '' }}"
                     >
                 </div>
 
@@ -235,12 +241,12 @@
                     </label>
 
                     <select id="category" name="category">
-                        <option value="一般">一般</option>
-                        <option value="學校">學校</option>
-                        <option value="公司">公司</option>
-                        <option value="設計公司">設計公司</option>
-                        <option value="個人">個人</option>
-                        <option value="其他">其他</option>
+                        <option value="一般" {{ 'selected' if customer and customer['category'] == '一般' else '' }}>一般</option>
+                        <option value="學校" {{ 'selected' if customer and customer['category'] == '學校' else '' }}>學校</option>
+                        <option value="公司" {{ 'selected' if customer and customer['category'] == '公司' else '' }}>公司</option>
+                        <option value="設計公司" {{ 'selected' if customer and customer['category'] == '設計公司' else '' }}>設計公司</option>
+                        <option value="個人" {{ 'selected' if customer and customer['category'] == '個人' else '' }}>個人</option>
+                        <option value="其他" {{ 'selected' if customer and customer['category'] == '其他' else '' }}>其他</option>
                     </select>
                 </div>
 
@@ -259,7 +265,7 @@
                     type="submit"
                     class="button primary"
                 >
-                    儲存客戶
+                    {{ '更新客戶' if customer else '儲存客戶' }}
                 </button>
             </div>
 

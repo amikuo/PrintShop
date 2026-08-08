@@ -171,7 +171,11 @@
             <p class="description">管理客戶基本資料。</p>
         </div>
 
-        <button class="button" type="button">
+        <button
+            class="button"
+            type="button"
+            onclick="window.location.href='/customers/new'"
+        >
             ＋ 新增客戶
         </button>
     </section>
@@ -193,6 +197,7 @@
                         <th>統一編號</th>
                         <th>電話</th>
                         <th>分類</th>
+                        <th>操作</th>
                     </tr>
                 </thead>
 
@@ -204,6 +209,15 @@
                         <td>{{ customer["tax_id"] }}</td>
                         <td>{{ customer["phone"] }}</td>
                         <td>{{ customer["category"] }}</td>
+                        <td>
+                            <a
+                                class="button"
+                                href="{{ url_for('edit_customer', customer_id=customer['id']) }}"
+                                style="display:inline-block; text-decoration:none;"
+                            >
+                                編輯
+                            </a>
+                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>
