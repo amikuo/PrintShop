@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PrintShop｜印刷店管理系統</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+
+<body>
+
+<header class="topbar">
+    <div>
+        <div class="brand">PrintShop</div>
+        <div class="subtitle">印刷店管理系統</div>
+    </div>
+</header>
+
+<main class="dashboard">
+
+    <section class="welcome">
+        <h1>工作總覽</h1>
+        <p>快速查看目前報價與訂單狀態。</p>
+    </section>
+
+    <section class="stats">
+
+        <div class="stat-card">
+            <div class="label">今日訂單</div>
+            <div class="number">0</div>
+        </div>
+
+        <div class="stat-card">
+            <div class="label">設計中</div>
+            <div class="number">0</div>
+        </div>
+
+        <div class="stat-card">
+            <div class="label">印製中</div>
+            <div class="number">0</div>
+        </div>
+
+        <div class="stat-card">
+            <div class="label">待取貨</div>
+            <div class="number">0</div>
+        </div>
+
+    </section>
+
+    <section class="actions">
+
+        <button>＋ 新增報價</button>
+        <button>＋ 新增訂單</button>
+        <button>查詢訂單</button>
+
+    </section>
+
+    <section class="panel">
+
+        <h2>近期訂單</h2>
+
+        <div class="empty">
+            目前尚無訂單資料
+        </div>
+
+    </section>
+
+</main>
+
+</body>
+</html>

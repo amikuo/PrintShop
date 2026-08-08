@@ -1,0 +1,111 @@
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Noto Sans TC",
+                 "Microsoft JhengHei", sans-serif;
+    background: #f5f6f8;
+    color: #20242a;
+}
+
+.topbar {
+    background: #ffffff;
+    border-bottom: 1px solid #e3e6ea;
+    padding: 18px 32px;
+}
+
+.brand {
+    font-size: 24px;
+    font-weight: 700;
+}
+
+.subtitle {
+    margin-top: 3px;
+    font-size: 13px;
+    color: #737981;
+}
+
+.dashboard {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 32px;
+}
+
+.welcome h1 {
+    margin: 0;
+    font-size: 28px;
+}
+
+.welcome p {
+    color: #737981;
+}
+
+.stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-top: 28px;
+}
+
+.stat-card {
+    background: white;
+    border: 1px solid #e3e6ea;
+    border-radius: 12px;
+    padding: 22px;
+}
+
+.label {
+    color: #737981;
+    font-size: 14px;
+}
+
+.number {
+    margin-top: 8px;
+    font-size: 32px;
+    font-weight: 700;
+}
+
+.actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 24px;
+}
+
+.actions button {
+    border: 1px solid #d5d9de;
+    background: white;
+    border-radius: 8px;
+    padding: 12px 18px;
+    font-size: 15px;
+    cursor: pointer;
+}
+
+.panel {
+    margin-top: 28px;
+    background: white;
+    border: 1px solid #e3e6ea;
+    border-radius: 12px;
+    padding: 24px;
+}
+
+.panel h2 {
+    margin-top: 0;
+}
+
+.empty {
+    padding: 40px 0;
+    text-align: center;
+    color: #858b93;
+}
+
+@media (max-width: 800px) {
+    .stats {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .actions {
+        flex-direction: column;
+    }
+}
