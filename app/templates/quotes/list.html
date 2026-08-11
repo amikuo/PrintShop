@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>報價管理</h1>
+    <p>一般報價不需要工作單位；專案報價可保留工作單位階層。</p>
+  </div>
+  <a class="btn" href="{{ url_for('quotes_new') }}">＋ 新增報價</a>
+</div>
+
+<div class="card">
+  <form class="row" method="get">
+    <input name="q" value="{{ q }}" placeholder="搜尋報價單號、客戶、專案">
+    <select name="status">
+      <option value="">全部狀態</option>
+      {% for s in quote_statuses %}
+        <option value="{{ s }}" {% if status==s %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+    <button class="btn" type="submit">搜尋</button>
+  </form>
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>報價單號</th><th>客戶</th><th>專案</th><th>模式</th><th>狀態</th><th>轉單</th></tr></thead>
+    <tbody>
+    {% for q in quotes %}
+      <tr>
+        <td><a href="{{ url_for('quotes_detail', quote_id=q.id) }}"><strong>{{ q.quote_number }}</strong></a></td>
+        <td>{{ q.customer_name }}</td>
+        <td>{{ q.project_name or '—' }}</td>
+        <td>{{ '專案' if q.mode=='project' else '一般' }}</td>
+        <td>{% if q.status=='無下訂報價' %}<span class="badge warn">{{ q.status }}</span>{% elif q.status=='已轉訂單' %}<span class="badge good">{{ q.status }}</span>{% else %}{{ q.status }}{% endif %}</td>
+        <td>{% if q.converted_order_id %}<a href="{{ url_for('orders_detail', order_id=q.converted_order_id) }}">查看訂單</a>{% else %}<span class="muted">—</span>{% endif %}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="6" class="muted">目前沒有報價。</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

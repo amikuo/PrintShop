@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>後加工選項</h1>
+    <p>多選後加工會以標籤形式顯示，可用於報價與訂單。</p>
+  </div>
+</div>
+
+<div class="card">
+  <form method="post" action="{{ url_for('finishing_new') }}" class="row">
+    <input name="name" placeholder="新增後加工，例如：燙金、上霧膜、打凸">
+    <button class="btn" type="submit">新增</button>
+  </form>
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>後加工名稱</th><th>排序</th><th>狀態</th></tr></thead>
+    <tbody>
+    {% for o in options %}
+      <tr>
+        <td><strong>{{ o.name }}</strong></td>
+        <td>{{ o.sort_order }}</td>
+        <td>{% if o.is_active %}<span class="badge good">啟用</span>{% else %}<span class="badge danger">停用</span>{% endif %}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="3" class="muted">目前沒有後加工選項。</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

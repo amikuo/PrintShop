@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>訂單管理</h1>
+    <p>訂單支援右欄智慧搜尋，可用歷史製作資料加速建立目前品項。</p>
+  </div>
+  <a class="btn" href="{{ url_for('orders_new') }}">＋ 新增訂單</a>
+</div>
+
+<div class="card">
+  <form class="row" method="get">
+    <input name="q" value="{{ q }}" placeholder="搜尋訂單編號、客戶、專案">
+    <select name="status">
+      <option value="">全部狀態</option>
+      {% for s in order_statuses %}
+        <option value="{{ s }}" {% if status==s %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+    <button class="btn" type="submit">搜尋</button>
+  </form>
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>訂單編號</th><th>來源報價</th><th>客戶</th><th>專案</th><th>模式</th><th>狀態</th></tr></thead>
+    <tbody>
+    {% for o in orders %}
+      <tr>
+        <td><a href="{{ url_for('orders_detail', order_id=o.id) }}"><strong>{{ o.order_number }}</strong></a></td>
+        <td>{{ o.quote_number or '—' }}</td>
+        <td>{{ o.customer_name }}</td>
+        <td>{{ o.project_name or '—' }}</td>
+        <td>{{ '專案' if o.mode=='project' else '一般' }}</td>
+        <td>{{ o.status }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="6" class="muted">目前沒有訂單。</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>規格管理</h1>
+    <p>品項是規格根節點；交易中的客製修改不會反向新增到規格資料庫。</p>
+  </div>
+</div>
+
+<details class="spec-master card" open>
+  <summary class="spec-master-summary">
+    <div><strong>規格</strong><span class="muted">正式可選規格</span></div>
+  </summary>
+  <div class="spec-master-body">
+    <form class="row spec-add-product" method="post" action="{{ url_for('specs_product_add') }}">
+      <input name="name" placeholder="新增品項，例如：名片" required>
+      <button class="btn" type="submit">＋ 新增品項</button>
+    </form>
+
+    <div class="product-spec-list">
+      {% for p in products %}
+      <details class="product-spec-card" {% if p.is_active %}open{% endif %}>
+        <summary>
+          <div><strong>{{p.name}}</strong>{% if not p.is_active %} <span class="badge danger">停用</span>{% endif %}</div>
+          <span class="summary-hint">展開／收合</span>
+        </summary>
+        <div class="product-spec-body">
+          <div class="manage-row">
+            <span class="muted">品項管理</span>
+            <details class="kebab-menu"><summary>⋯</summary><div class="menu-pop">
+              <form method="post" action="{{ url_for('specs_manage', kind='products', item_id=p.id, action='edit') }}"><input name="name" value="{{p.name}}" required><button>儲存名稱</button></form>
+              <form method="post" action="{{ url_for('specs_manage', kind='products', item_id=p.id, action='toggle') }}"><button>{{'停用' if p.is_active else '恢復使用'}}</button></form>
+              <form method="post" action="{{ url_for('specs_manage', kind='products', item_id=p.id, action='delete') }}" onsubmit="return confirm('確定刪除？已有歷史使用時系統會阻止刪除。')"><button class="danger-text">刪除</button></form>
+            </div></details>
+          </div>
+
+          {% set groups = [
+            ('materials','材質',materials_by_product[p.id],'name','例如：象牙卡'),
+            ('sizes','尺寸',sizes_by_product[p.id],'name','例如：90×54mm'),
+            ('quantities','常用數量',quantities_by_product[p.id],'value_text','例如：2、5、10')
+          ] %}
+          {% for kind,label,rows,field,placeholder in groups %}
+          <section class="spec-subgroup">
+            <div class="subgroup-head">
+              <strong>{{label}}</strong>
+              <form class="inline-create" method="post" action="{{ url_for('specs_child_add', product_id=p.id, kind=kind) }}">
+                <input name="value" placeholder="{{placeholder}}" required><button>＋ 新增</button>
+              </form>
+            </div>
+            <div class="spec-chip-list">
+              {% for x in rows %}
+              <div class="managed-chip {% if not x.is_active %}is-disabled{% endif %}">
+                <span>{{x[field]}}</span>
+                <details class="kebab-menu"><summary>⋯</summary><div class="menu-pop">
+                  <form method="post" action="{{ url_for('specs_manage', kind=kind, item_id=x.id, action='edit') }}"><input name="name" value="{{x[field]}}" required><button>儲存</button></form>
+                  <form method="post" action="{{ url_for('specs_manage', kind=kind, item_id=x.id, action='toggle') }}"><button>{{'停用' if x.is_active else '恢復使用'}}</button></form>
+                  <form method="post" action="{{ url_for('specs_manage', kind=kind, item_id=x.id, action='delete') }}" onsubmit="return confirm('確定刪除？已有歷史使用時系統會阻止刪除。')"><button class="danger-text">刪除</button></form>
+                </div></details>
+              </div>
+              {% else %}<span class="muted">尚未設定{{label}}</span>{% endfor %}
+            </div>
+          </section>
+          {% endfor %}
+
+          <section class="spec-subgroup">
+            <div class="subgroup-head"><strong>單位</strong></div>
+            <form class="unit-form" method="post" action="{{ url_for('specs_unit_save', product_id=p.id) }}">
+              <input name="unit_name" value="{{p.unit_name}}" placeholder="例如：盒／張／本"><button>儲存單位</button>
+            </form>
+            <div class="muted small">與品項直接關聯，主要供報價／訂單快速帶入。</div>
+          </section>
+        </div>
+      </details>
+      {% else %}<div class="empty">尚未建立品項。</div>{% endfor %}
+    </div>
+
+    <section class="finishing-section">
+      <div class="subgroup-head">
+        <div><strong>後加工</strong><div class="muted small">獨立規格，可多選；文字本身不執行停用。</div></div>
+        <form class="inline-create" method="post" action="{{ url_for('specs_finishing_add') }}"><input name="name" placeholder="新增後加工"><button>＋ 新增</button></form>
+      </div>
+      <div class="spec-chip-list">
+        {% for f in finishings %}
+        <div class="managed-chip {% if not f.is_active %}is-disabled{% endif %}">
+          <span>#{{f.name}}</span>
+          <details class="kebab-menu"><summary>⋯</summary><div class="menu-pop">
+            <form method="post" action="{{ url_for('specs_manage', kind='finishings', item_id=f.id, action='edit') }}"><input name="name" value="{{f.name}}" required><button>儲存</button></form>
+            <form method="post" action="{{ url_for('specs_manage', kind='finishings', item_id=f.id, action='toggle') }}"><button>{{'停用' if f.is_active else '恢復使用'}}</button></form>
+            <form method="post" action="{{ url_for('specs_manage', kind='finishings', item_id=f.id, action='delete') }}" onsubmit="return confirm('確定刪除？已有歷史使用時系統會阻止刪除。')"><button class="danger-text">刪除</button></form>
+          </div></details>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+</details>
+
+<div style="height:16px"></div>
+
+<details class="spec-master card">
+  <summary class="spec-master-summary">
+    <div><strong>常用規格</strong><span class="muted">完整規格組合，一鍵帶入</span></div>
+  </summary>
+  <div class="spec-master-body">
+    <form method="post" action="{{ url_for('specs_quick_add') }}">
+      <div class="grid cols-2 quick-grid">
+        <div class="field"><label>名稱 *</label><input name="name" placeholder="例如：標準象牙卡名片" required></div>
+        <div class="field"><label>品項 *</label><select name="product_id" id="quick-product" required><option value="">請選擇品項</option>{% for p in products if p.is_active %}<option value="{{p.id}}">{{p.name}}</option>{% endfor %}</select></div>
+        <div class="field"><label>材質</label><input name="material_text" id="quick-material" list="quick-material-list"></div>
+        <div class="field"><label>尺寸</label><input name="size_text" id="quick-size" list="quick-size-list"></div>
+        <div class="field"><label>數量</label><input name="quantity_text" id="quick-quantity" list="quick-quantity-list"></div>
+        <div class="field"><label>單位</label><input name="unit_text" id="quick-unit"></div>
+        <div class="field"><label>預設單價</label><input type="number" step="0.01" name="unit_price"></div>
+        <div class="field field-full"><label>後加工</label><div class="check-tag-list">{% for f in finishings if f.is_active %}<label class="check-tag"><input type="checkbox" name="finishings" value="{{f.name}}"><span>#{{f.name}}</span></label>{% endfor %}</div></div>
+        <div class="field field-full"><label>備註</label><textarea name="note"></textarea></div>
+      </div>
+      <datalist id="quick-material-list"></datalist><datalist id="quick-size-list"></datalist><datalist id="quick-quantity-list"></datalist>
+      <button class="btn">建立常用規格</button>
+    </form>
+
+    <div class="quick-template-list">
+      {% for q in quick_templates %}
+      <div class="quick-template-row {% if not q.is_active %}is-disabled{% endif %}">
+        <div><strong>★ {{q.name}}</strong><div class="muted small">{{q.product_name}}{% if q.material_text %}｜{{q.material_text}}{% endif %}{% if q.size_text %}｜{{q.size_text}}{% endif %}{% if q.quantity_text %}｜{{q.quantity_text}}{% endif %}{% if q.unit_text %}{{q.unit_text}}{% endif %}{% if q.finishing_names %}｜#{{q.finishing_names|replace('、',' #')}}{% endif %}</div></div>
+        <details class="kebab-menu"><summary>⋯</summary><div class="menu-pop">
+          <form method="post" action="{{ url_for('specs_manage', kind='quick', item_id=q.id, action='toggle') }}"><button>{{'停用' if q.is_active else '恢復使用'}}</button></form>
+          <form method="post" action="{{ url_for('specs_manage', kind='quick', item_id=q.id, action='delete') }}" onsubmit="return confirm('確定刪除常用規格？')"><button class="danger-text">刪除</button></form>
+        </div></details>
+      </div>
+      {% else %}<div class="empty">尚未建立常用規格。</div>{% endfor %}
+    </div>
+  </div>
+</details>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function(){
+  const p = document.getElementById('quick-product');
+  if (!p) return;
+  function fill(id,rows,key){
+    const dl=document.getElementById(id); dl.innerHTML='';
+    (rows||[]).forEach(r=>{const o=document.createElement('option');o.value=r[key];dl.appendChild(o);});
+  }
+  async function load(){
+    ['quick-material','quick-size','quick-quantity','quick-unit'].forEach(id=>document.getElementById(id).value='');
+    fill('quick-material-list',[],'name');fill('quick-size-list',[],'name');fill('quick-quantity-list',[],'value_text');
+    if(!p.value)return;
+    const d=await fetch(`/api/specs/product/${p.value}`).then(r=>r.json());
+    if(!d.ok)return;
+    fill('quick-material-list',d.materials,'name');fill('quick-size-list',d.sizes,'name');fill('quick-quantity-list',d.quantities,'value_text');
+    document.getElementById('quick-unit').value=d.product.unit_name||'';
+  }
+  p.addEventListener('change',load);
+})();
+</script>
+{% endblock %}

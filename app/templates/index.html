@@ -1,71 +1,77 @@
-<!DOCTYPE html>
-<html lang="zh-Hant">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PrintShop｜印刷店管理系統</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-</head>
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head dashboard-head">
+  <div>
+    <h1>工作總覽</h1>
+    <p>優先掌握尚未完成的設計、印製與交貨工作。</p>
+  </div>
+  <div class="top-actions">
+    <a class="btn" href="{{ url_for('quotes_new') }}">＋ 新增報價</a>
+    <a class="btn-secondary" href="{{ url_for('orders_new') }}">＋ 新增訂單</a>
+  </div>
+</div>
 
-<body>
+<div class="dashboard-stats">
+  <a class="card dashboard-stat" href="{{ url_for('orders_list') }}">
+    <div class="muted">未交訂單</div>
+    <div class="stat">{{ stats.unfulfilled }}</div>
+  </a>
+  <a class="card dashboard-stat" href="{{ url_for('orders_list', status='設計中') }}">
+    <div class="muted">設計中</div>
+    <div class="stat">{{ stats.designing }}</div>
+  </a>
+  <a class="card dashboard-stat" href="{{ url_for('orders_list', status='印製中') }}">
+    <div class="muted">印製中</div>
+    <div class="stat">{{ stats.printing }}</div>
+  </a>
+  <a class="card dashboard-stat" href="{{ url_for('orders_list', status='待取貨') }}">
+    <div class="muted">待取貨</div>
+    <div class="stat">{{ stats.pickup }}</div>
+  </a>
+</div>
 
-<header class="topbar">
+<div style="height:18px"></div>
+
+<section class="card dashboard-recent">
+  <div class="page-head" style="margin-bottom:10px">
     <div>
-        <div class="brand">PrintShop</div>
-        <div class="subtitle">印刷店管理系統</div>
+      <h2 style="margin:0">最近訂單</h2>
+      <p class="muted" style="margin:5px 0 0">報價與訂單依建立時間合併顯示；Q 開頭代表尚未轉單的報價。</p>
     </div>
-</header>
+    <a href="{{ url_for('orders_list') }}" class="btn-secondary">查看全部訂單</a>
+  </div>
 
-<main class="dashboard">
-
-    <section class="welcome">
-        <h1>工作總覽</h1>
-        <p>快速查看目前報價與訂單狀態。</p>
-    </section>
-
-    <section class="stats">
-
-        <div class="stat-card">
-            <div class="label">今日訂單</div>
-            <div class="number">0</div>
-        </div>
-
-        <div class="stat-card">
-            <div class="label">設計中</div>
-            <div class="number">0</div>
-        </div>
-
-        <div class="stat-card">
-            <div class="label">印製中</div>
-            <div class="number">0</div>
-        </div>
-
-        <div class="stat-card">
-            <div class="label">待取貨</div>
-            <div class="number">0</div>
-        </div>
-
-    </section>
-
-    <section class="actions">
-
-        <button>＋ 新增報價</button>
-        <button>＋ 新增訂單</button>
-        <button>查詢訂單</button>
-
-    </section>
-
-    <section class="panel">
-
-        <h2>近期訂單</h2>
-
-        <div class="empty">
-            目前尚無訂單資料
-        </div>
-
-    </section>
-
-</main>
-
-</body>
-</html>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>單號</th>
+          <th>客戶</th>
+          <th>專案</th>
+          <th>狀態</th>
+          <th>建立時間</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for x in recent_entries %}
+          <tr>
+            <td>
+              {% if x.record_type == 'quote' %}
+                <a href="{{ url_for('quotes_detail', quote_id=x.record_id) }}"><strong>{{ x.document_number }}</strong></a>
+              {% else %}
+                <a href="{{ url_for('orders_detail', order_id=x.record_id) }}"><strong>{{ x.document_number }}</strong></a>
+              {% endif %}
+            </td>
+            <td>{{ x.customer_name }}</td>
+            <td>{{ x.project_name or '—' }}</td>
+            <td>{{ x.status }}</td>
+            <td>{{ x.created_at|display_date }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="5" class="muted">目前沒有交易資料。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

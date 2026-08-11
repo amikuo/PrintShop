@@ -1,279 +1,31 @@
-<!DOCTYPE html>
-<html lang="zh-Hant">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ '編輯客戶' if customer else '新增客戶' }} | PrintShop</title>
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ '編輯客戶' if customer else '新增客戶' }}</h1>
+    <p>客戶可被報價、專案與訂單共同引用。</p>
+  </div>
+  <a class="btn-secondary" href="{{ url_for('customers_list') }}">回客戶列表</a>
+</div>
 
-    <style>
-        * {
-            box-sizing: border-box;
-        }
-
-        body {
-            margin: 0;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
-                         "Noto Sans TC", sans-serif;
-            background: #f5f6f8;
-            color: #202124;
-        }
-
-        .topbar {
-            background: #ffffff;
-            border-bottom: 1px solid #e1e3e6;
-            padding: 24px 40px;
-        }
-
-        .brand {
-            font-size: 28px;
-            font-weight: 700;
-        }
-
-        .subtitle {
-            margin-top: 6px;
-            color: #6b7280;
-        }
-
-        .container {
-            max-width: 900px;
-            margin: 0 auto;
-            padding: 40px 24px;
-        }
-
-        .page-header {
-            margin-bottom: 28px;
-        }
-
-        .page-title {
-            margin: 0;
-            font-size: 32px;
-        }
-
-        .description {
-            margin: 8px 0 0;
-            color: #6b7280;
-        }
-
-        .panel {
-            background: #ffffff;
-            border: 1px solid #e1e3e6;
-            border-radius: 12px;
-            padding: 28px;
-        }
-
-        .form-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 22px;
-        }
-
-        .field {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-
-        .field.full {
-            grid-column: 1 / -1;
-        }
-
-        label {
-            font-size: 14px;
-            font-weight: 600;
-        }
-
-        input,
-        select {
-            width: 100%;
-            border: 1px solid #d5d9de;
-            border-radius: 8px;
-            padding: 12px 14px;
-            font-size: 15px;
-            background: #ffffff;
-        }
-
-        input:focus,
-        select:focus {
-            outline: none;
-            border-color: #2684ff;
-            box-shadow: 0 0 0 3px rgba(38, 132, 255, 0.12);
-        }
-
-        .required {
-            color: #d93025;
-        }
-
-        .actions {
-            display: flex;
-            justify-content: flex-end;
-            gap: 12px;
-            margin-top: 30px;
-            padding-top: 22px;
-            border-top: 1px solid #edf0f2;
-        }
-
-        .button {
-            border: 1px solid #d5d9de;
-            background: #ffffff;
-            border-radius: 8px;
-            padding: 11px 20px;
-            font-size: 15px;
-            cursor: pointer;
-        }
-
-        .button.primary {
-            background: #2684ff;
-            border-color: #2684ff;
-            color: #ffffff;
-        }
-
-        .button:hover {
-            opacity: 0.9;
-        }
-
-        @media (max-width: 700px) {
-            .topbar {
-                padding: 20px;
-            }
-
-            .container {
-                padding: 24px 16px;
-            }
-
-            .panel {
-                padding: 20px;
-            }
-
-            .form-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .field.full {
-                grid-column: auto;
-            }
-        }
-    </style>
-</head>
-
-<body>
-
-<header class="topbar">
-    <div class="brand">PrintShop</div>
-    <div class="subtitle">印刷店管理系統</div>
-</header>
-
-<main class="container">
-
-    <section class="page-header">
-        <h1 class="page-title">{{ '編輯客戶' if customer else '新增客戶' }}</h1>
-        <p class="description">
-            {{ '修改客戶的基本資料。' if customer else '建立客戶的基本資料。' }}
-        </p>
-    </section>
-
-    <section class="panel">
-
-        <form method="POST" action="{{ url_for('edit_customer', customer_id=customer['id']) if customer else url_for('new_customer') }}">
-
-            <div class="form-grid">
-
-                <div class="field full">
-                    <label for="company_name">
-                        客戶名稱 <span class="required">*</span>
-                    </label>
-
-                    <input
-                        type="text"
-                        id="company_name"
-                        name="company_name"
-                        required
-                        placeholder="例如：廣達數位印刷"
-                        value="{{ customer['company_name'] if customer else '' }}"
-                    >
-                </div>
-
-                <div class="field">
-                    <label for="contact_person">
-                        聯絡人
-                    </label>
-
-                    <input
-                        type="text"
-                        id="contact_person"
-                        name="contact_person"
-                        placeholder="例如：王小明"
-                        value="{{ customer['contact_person'] if customer else '' }}"
-                    >
-                </div>
-
-                <div class="field">
-                    <label for="tax_id">
-                        統一編號
-                    </label>
-
-                    <input
-                        type="text"
-                        id="tax_id"
-                        name="tax_id"
-                        maxlength="8"
-                        placeholder="例如：12345678"
-                        value="{{ customer['tax_id'] if customer else '' }}"
-                    >
-                </div>
-
-                <div class="field">
-                    <label for="phone">
-                        電話
-                    </label>
-
-                    <input
-                        type="text"
-                        id="phone"
-                        name="phone"
-                        placeholder="例如：05-1234567"
-                        value="{{ customer['phone'] if customer else '' }}"
-                    >
-                </div>
-
-                <div class="field">
-                    <label for="category">
-                        客戶分類
-                    </label>
-
-                    <select id="category" name="category">
-                        <option value="一般" {{ 'selected' if customer and customer['category'] == '一般' else '' }}>一般</option>
-                        <option value="學校" {{ 'selected' if customer and customer['category'] == '學校' else '' }}>學校</option>
-                        <option value="公司" {{ 'selected' if customer and customer['category'] == '公司' else '' }}>公司</option>
-                        <option value="設計公司" {{ 'selected' if customer and customer['category'] == '設計公司' else '' }}>設計公司</option>
-                        <option value="個人" {{ 'selected' if customer and customer['category'] == '個人' else '' }}>個人</option>
-                        <option value="其他" {{ 'selected' if customer and customer['category'] == '其他' else '' }}>其他</option>
-                    </select>
-                </div>
-
-            </div>
-
-            <div class="actions">
-                <button
-                    type="button"
-                    class="button"
-                    onclick="window.location.href='/customers'"
-                >
-                    取消
-                </button>
-
-                <button
-                    type="submit"
-                    class="button primary"
-                >
-                    {{ '更新客戶' if customer else '儲存客戶' }}
-                </button>
-            </div>
-
-        </form>
-
-    </section>
-
-</main>
-
-</body>
-</html>
+<form method="post" class="card">
+  <div class="grid cols-3">
+    <div class="field"><label>客戶名稱 *</label><input name="name" value="{{ customer.name if customer else '' }}" required></div>
+    <div class="field"><label>聯絡人</label><input name="contact_person" value="{{ customer.contact_person if customer else '' }}"></div>
+    <div class="field"><label>統編</label><input name="tax_id" value="{{ customer.tax_id if customer else '' }}"></div>
+    <div class="field"><label>電話</label><input name="phone" value="{{ customer.phone if customer else '' }}"></div>
+    <div class="field"><label>Email</label><input type="email" name="email" value="{{ customer.email if customer else '' }}"></div>
+    <div class="field"><label>分類</label>
+      <select name="category">
+        {% for c in customer_categories %}
+          <option value="{{ c }}" {% if customer and customer.category==c or (not customer and c=='一般') %}selected{% endif %}>{{ c }}</option>
+        {% endfor %}
+      </select>
+    </div>
+  </div>
+  <div class="field"><label>備註</label><textarea name="note">{{ customer.note if customer else '' }}</textarea></div>
+  <div class="sticky-actions">
+    <button class="btn" type="submit">儲存</button>
+  </div>
+</form>
+{% endblock %}

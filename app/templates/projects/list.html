@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>專案管理</h1>
+    <p>專案用於管理同一客戶下、同一事件／任務的多張報價與工作單位。</p>
+  </div>
+  <a class="btn" href="{{ url_for('projects_new') }}">＋ 新增專案</a>
+</div>
+
+<div class="card">
+  <form class="searchbox" method="get">
+    <input name="q" value="{{ q }}" placeholder="搜尋專案名稱或客戶名稱">
+    <button class="btn" type="submit">搜尋</button>
+  </form>
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>專案名稱</th><th>客戶</th><th>狀態</th><th>報價數</th><th>訂單數</th><th>更新</th></tr></thead>
+    <tbody>
+    {% for p in projects %}
+      <tr>
+        <td><a href="{{ url_for('projects_detail', project_id=p.id) }}"><strong>{{ p.project_name }}</strong></a></td>
+        <td>{{ p.customer_name }}</td>
+        <td><span class="badge">{{ p.status }}</span></td>
+        <td>{{ p.quote_count }}</td>
+        <td>{{ p.order_count }}</td>
+        <td>{{ p.updated_at[:16] if p.updated_at else '—' }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="6" class="muted">目前沒有專案。</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

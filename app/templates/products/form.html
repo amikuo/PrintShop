@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>新增常用規格</h1>
+    <p>儲存為常用組合後，可在報價／訂單中快速搜尋套用。</p>
+  </div>
+  <a class="btn-secondary" href="{{ url_for('specs_list') }}">回規格列表</a>
+</div>
+
+<form method="post" class="card">
+  <div class="grid cols-3">
+    <div class="field"><label>品項 *</label><input name="product_name" required></div>
+    <div class="field"><label>材質</label><input name="material"></div>
+    <div class="field"><label>尺寸</label><input name="size"></div>
+    <div class="field"><label>單位</label><input name="unit" placeholder="張 / 盒 / 本 / 套"></div>
+  </div>
+  <div class="field"><label>備註</label><textarea name="note"></textarea></div>
+  <div class="sticky-actions">
+    <button class="btn" type="submit">儲存</button>
+  </div>
+</form>
+{% endblock %}

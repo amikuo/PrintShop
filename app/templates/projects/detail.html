@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ project.project_name if project else '新增專案' }}</h1>
+    <p>專案用於連結客戶、報價與訂單，並保留工作單位結構。</p>
+  </div>
+  <a class="btn-secondary" href="{{ url_for('projects_list') }}">回專案列表</a>
+</div>
+
+{% if not project %}
+  <form method="post" class="card">
+    <div class="grid cols-3">
+      <div class="field">
+        <label>客戶 *</label>
+        <input name="customer_name" id="customer_name" placeholder="輸入客戶名稱" autocomplete="off">
+        <input type="hidden" name="customer_id" id="customer_id">
+      </div>
+      <div class="field"><label>專案名稱 *</label><input name="project_name" required></div>
+      <div class="field">
+        <label>狀態</label>
+        <select name="status">
+          {% for s in project_statuses %}
+            <option value="{{ s }}" {% if s=='進行中' %}selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <div class="field"><label>備註</label><textarea name="note"></textarea></div>
+    <div class="sticky-actions"><button class="btn" type="submit">儲存</button></div>
+  </form>
+
+  <script>
+  document.addEventListener('DOMContentLoaded', () => {
+    const input = document.getElementById('customer_name');
+    const hidden = document.getElementById('customer_id');
+    if(window.__ps) window.__ps.customerAutocomplete(input, hidden, "{{ url_for('api_customers_search') }}");
+  });
+  </script>
+{% else %}
+  <div class="card">
+    <div class="grid cols-3">
+      <div><div class="muted">客戶</div><div><strong>{{ project.customer_name }}</strong></div></div>
+      <div><div class="muted">狀態</div><div><span class="badge">{{ project.status }}</span></div></div>
+      <div><div class="muted">建立</div><div>{{ project.created_at[:16] }}</div></div>
+    </div>
+    <div style="margin-top:12px"><div class="muted">備註</div><div>{{ project.note or '—' }}</div></div>
+  </div>
+
+  <div class="grid cols-2" style="grid-template-columns:1fr 1fr; gap:16px;">
+    <div class="card">
+      <div class="page-head" style="margin-bottom:10px">
+        <h2 style="margin:0">關聯報價</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>報價單號</th><th>模式</th><th>狀態</th></tr></thead>
+          <tbody>
+          {% for q in quotes %}
+            <tr>
+              <td><a href="{{ url_for('quotes_detail', quote_id=q.id) }}"><strong>{{ q.number }}</strong></a></td>
+              <td>{{ '專案' if q.mode=='project' else '一般' }}</td>
+              <td>{{ q.status }}</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="3" class="muted">尚未有報價。</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="page-head" style="margin-bottom:10px">
+        <h2 style="margin:0">關聯訂單</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>訂單編號</th><th>模式</th><th>狀態</th></tr></thead>
+          <tbody>
+          {% for o in orders %}
+            <tr>
+              <td><a href="{{ url_for('orders_detail', order_id=o.id) }}"><strong>{{ o.number }}</strong></a></td>
+              <td>{{ '專案' if o.mode=='project' else '一般' }}</td>
+              <td>{{ o.status }}</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="3" class="muted">尚未有訂單。</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+{% endif %}
+{% endblock %}

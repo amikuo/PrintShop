@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title or "PrintShop" }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <script defer src="{{ url_for('static', filename='js/app.js') }}"></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div>
+          <div class="brand">PrintShop V2.2</div>
+          <div class="muted" style="color:#cbd5e1;font-size:12px">依 Business_Rules_Final_v2.md 建置</div>
+        </div>
+        <nav class="topnav">
+        <a href="{{ url_for('index') }}">總覽</a>
+        <a href="{{ url_for('customers_list') }}">客戶</a>
+        <a href="{{ url_for('specs_list') }}">規格</a>
+        <a href="{{ url_for('projects_list') }}">專案</a>
+        <a href="{{ url_for('quotes_list') }}">報價</a>
+        <a href="{{ url_for('orders_list') }}">訂單</a>
+        </nav>
+      </div>
+    </header>
+    <main class="container">
+      <div class="flash-wrap">
+        {% with messages = get_flashed_messages() %}
+          {% if messages %}
+            {% for msg in messages %}
+              <div class="flash">{{ msg }}</div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+      </div>
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+{% block scripts %}{% endblock %}
+</body>
+</html>

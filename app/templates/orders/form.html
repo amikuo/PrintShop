@@ -1,0 +1,400 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>新增訂單</h1>
+    <p>右欄智慧搜尋可從歷史製作資料找回可參考的品項、材質、尺寸與價格。</p>
+  </div>
+  <a class="btn-secondary" href="{{ url_for('orders_list') }}">回訂單列表</a>
+</div>
+
+<form method="post" id="order-form">
+  <input type="hidden" name="payload_json" id="payload_json">
+  <div class="split">
+    <section>
+      <div class="card">
+        <div class="grid cols-3">
+          <div class="field">
+            <label>客戶 *</label>
+            <input id="customer_name" placeholder="輸入客戶名稱" autocomplete="off">
+            <input type="hidden" id="customer_id">
+          </div>
+
+          <div class="field">
+            <label>專案（可選）</label>
+            <select id="project_id">
+              <option value="">— 不指定專案 —</option>
+              {% for p in projects %}
+                <option value="{{ p.id }}" data-customer="{{ p.customer_id }}">{{ p.project_name }}｜{{ p.customer_name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="field">
+            <label>模式</label>
+            <div class="row">
+              <label class="badge"><input type="radio" name="mode" value="normal" checked> 一般訂單</label>
+              <label class="badge"><input type="radio" name="mode" value="project"> 專案訂單</label>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid cols-2" style="grid-template-columns:1fr 1fr; gap:12px;">
+          <div class="field">
+            <label>訂單狀態</label>
+            <select id="status">
+              {% for s in order_statuses %}
+                <option value="{{ s }}" {% if s=='設計中' %}selected{% endif %}>{{ s }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="field">
+            <label>專案名稱（新專案時）</label>
+            <input id="project_name" placeholder="例如：2026教師甄選">
+          </div>
+        </div>
+
+        <div class="field"><label>備註</label><textarea id="note"></textarea></div>
+      </div>
+
+      <div id="normal-mode" class="card">
+        <div class="page-head" style="margin-bottom:12px">
+          <div><h2 style="margin:0">一般訂單品項</h2><p class="muted" style="margin:6px 0 0">直接建立 item，不需工作單位。</p></div>
+          <button class="btn-secondary" type="button" id="add-normal-item">＋ 新增品項</button>
+        </div>
+        <div id="normal-items"></div>
+      </div>
+
+      <div id="project-mode" class="card hidden">
+        <div class="page-head" style="margin-bottom:12px">
+          <div><h2 style="margin:0">專案訂單</h2><p class="muted" style="margin:6px 0 0">可建立多個工作單位，每個工作單位包含多個品項。</p></div>
+          <button class="btn-secondary" type="button" id="add-work-unit">＋ 新增工作單位</button>
+        </div>
+        <div id="work-units"></div>
+      </div>
+
+      <div class="summary">
+        <div>
+          <div class="muted">預估總額</div>
+          <strong>NT$ <span data-summary-total>0</span></strong>
+        </div>
+        <div class="row">
+          <a class="btn-secondary" href="{{ url_for('orders_list') }}">取消</a>
+          <button class="btn" type="submit">建立訂單</button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="sidebar card">
+      <div class="page-head" style="margin-bottom:10px">
+        <div>
+          <h2 style="margin:0">智慧搜尋</h2>
+          <p class="muted" style="margin:6px 0 0">搜尋歷史製作資料，點擊即可套用到目前工作區。</p>
+        </div>
+      </div>
+      <div class="searchbox">
+        <input id="search-q" placeholder="例如：海報、A3、嘉義高中">
+        <button class="btn" type="button" id="search-btn">搜尋</button>
+      </div>
+      <div class="muted" style="margin-top:10px">點擊「套用」會加到目前使用中的工作單位。</div>
+      <div class="search-results" id="search-results"></div>
+    </aside>
+  </div>
+</form>
+
+<template id="item-template">
+  <div class="item-row js-item-row">
+    <div class="field" style="margin:0">
+      <label class="small">品項</label>
+      <input class="mini js-product" placeholder="名片 / 海報 / DM">
+    </div>
+    <div class="field" style="margin:0">
+      <label class="small">規格搜尋</label>
+      <input class="mini js-spec-search" placeholder="搜尋常用規格">
+    </div>
+    <div class="field" style="margin:0">
+      <label class="small">材質</label>
+      <input class="mini js-material" placeholder="象牙卡 / 銅版紙">
+    </div>
+    <div class="field" style="margin:0">
+      <label class="small">尺寸</label>
+      <input class="mini js-size" placeholder="A3 / 90×54mm">
+    </div>
+    <div class="field" style="margin:0">
+      <label class="small">後加工 #tag</label>
+      <div class="picker">
+        <input class="mini js-finishing-input" readonly placeholder="點擊選擇後加工">
+        <div class="tagbox js-finishing-tags"></div>
+      </div>
+    </div>
+    <div class="field" style="margin:0">
+      <label class="small">數量</label>
+      <input class="mini js-qty" type="number" step="0.01" value="1">
+    </div>
+    <div class="field" style="margin:0">
+      <label class="small">單位</label>
+      <input class="mini js-unit" placeholder="張 / 盒">
+    </div>
+    <div class="field" style="margin:0">
+      <label class="small">單價</label>
+      <input class="mini js-price" type="number" step="0.01" value="0">
+    </div>
+    <div class="field" style="margin:0">
+      <label class="small">小計</label>
+      <div class="mini" style="padding:11px 10px;background:#f8fafc;border:1px solid var(--line);border-radius:10px">NT$ <span class="js-subtotal">0</span></div>
+    </div>
+    <div class="actions" style="padding-top:25px">
+      <button type="button" class="btn-danger js-remove">刪除</button>
+    </div>
+    <div class="field" style="grid-column:1 / -1; margin:0">
+      <label class="small">備註</label>
+      <input class="mini js-note" placeholder="備註">
+    </div>
+  </div>
+</template>
+
+<template id="work-unit-template">
+  <div class="wu">
+    <div class="wu-head">
+      <div class="grid" style="grid-template-columns: 1.1fr .9fr; gap:10px; width:100%;">
+        <div class="field" style="margin:0">
+          <label>工作單位名稱</label>
+          <input class="wu-name" placeholder="A校 / B校 / 識別證組">
+        </div>
+        <div class="field" style="margin:0">
+          <label>工作單位備註</label>
+          <input class="wu-note" placeholder="可選">
+        </div>
+      </div>
+      <div class="top-actions" style="align-items:flex-end">
+        <button type="button" class="btn-secondary js-add-item">＋ 品項</button>
+        <button type="button" class="btn-danger js-remove-wu">刪除工作單位</button>
+      </div>
+    </div>
+    <div class="wu-items"></div>
+  </div>
+</template>
+
+<script>
+  const FINISHING_OPTIONS = {{ finishing_options | map(attribute='name') | list | tojson }};
+  const FORM = document.getElementById('order-form');
+  const CUSTOMER_INPUT = document.getElementById('customer_name');
+  const CUSTOMER_ID = document.getElementById('customer_id');
+  const PROJECT_ID = document.getElementById('project_id');
+  const PROJECT_NAME = document.getElementById('project_name');
+  const PAYLOAD = document.getElementById('payload_json');
+  const MODE_NORMAL = document.getElementById('normal-mode');
+  const MODE_PROJECT = document.getElementById('project-mode');
+  const NORMAL_ITEMS = document.getElementById('normal-items');
+  const WORK_UNITS = document.getElementById('work-units');
+  const SEARCH_Q = document.getElementById('search-q');
+  const SEARCH_RESULTS = document.getElementById('search-results');
+  let activeWorkUnit = null;
+
+  if (window.__ps) {
+    window.__ps.customerAutocomplete(CUSTOMER_INPUT, CUSTOMER_ID, "{{ url_for('api_customers_search') }}");
+  }
+
+  function makeItem(prefill = {}) {
+    const frag = document.getElementById('item-template').content.cloneNode(true);
+    const row = frag.querySelector('.js-item-row');
+    row.querySelector('.js-product').value = prefill.product_name || '';
+    row.querySelector('.js-material').value = prefill.material || '';
+    row.querySelector('.js-size').value = prefill.size || '';
+    row.querySelector('.js-qty').value = prefill.quantity ?? 1;
+    row.querySelector('.js-unit').value = prefill.unit || '';
+    row.querySelector('.js-price').value = prefill.unit_price ?? 0;
+    row.querySelector('.js-note').value = prefill.note || '';
+    row.querySelector('.js-subtotal').textContent = window.__ps.fmtMoney((prefill.quantity || 1) * (prefill.unit_price || 0));
+
+    const finishingInput = row.querySelector('.js-finishing-input');
+    const finishingTags = row.querySelector('.js-finishing-tags');
+    if (prefill.finishing) finishingInput.value = prefill.finishing;
+    window.__ps.finishingPicker(finishingInput, finishingTags, FINISHING_OPTIONS.map(name => ({name})));
+
+    row.querySelector('.js-qty').addEventListener('input', () => window.__ps.recalcRow(row));
+    row.querySelector('.js-price').addEventListener('input', () => window.__ps.recalcRow(row));
+    row.querySelector('.js-remove').onclick = () => {
+      row.remove();
+      window.__ps.updateSummary(document);
+    };
+
+    window.__ps.specAutocomplete(
+      row.querySelector('.js-spec-search'),
+      (preset) => {
+        row.querySelector('.js-product').value = preset.product_name || '';
+        row.querySelector('.js-material').value = preset.material || '';
+        row.querySelector('.js-size').value = preset.size || '';
+        row.querySelector('.js-unit').value = preset.unit || '';
+      },
+      "{{ url_for('api_specs_search') }}"
+    );
+
+    return row;
+  }
+
+  function addNormalItem(prefill = {}) {
+    const row = makeItem(prefill);
+    NORMAL_ITEMS.appendChild(row);
+    window.__ps.updateSummary(document);
+  }
+
+  let wuCounter = 0;
+  function setActive(block) {
+    activeWorkUnit = block;
+    document.querySelectorAll('.wu').forEach(w => w.classList.toggle('active', w === block));
+  }
+
+  function makeWorkUnit(prefill = {}) {
+    const frag = document.getElementById('work-unit-template').content.cloneNode(true);
+    const block = frag.querySelector('.wu');
+    const items = block.querySelector('.wu-items');
+    block.dataset.index = String(wuCounter++);
+    block.querySelector('.wu-name').value = prefill.name || '';
+    block.querySelector('.wu-note').value = prefill.note || '';
+    block.querySelector('.js-add-item').onclick = () => { items.appendChild(makeItem()); window.__ps.updateSummary(document); };
+    block.querySelector('.js-remove-wu').onclick = () => {
+      if (WORK_UNITS.querySelectorAll('.wu').length > 1) {
+        const next = block.nextElementSibling || block.previousElementSibling;
+        block.remove();
+        if (next) setActive(next);
+        window.__ps.updateSummary(document);
+      }
+    };
+    block.addEventListener('click', () => setActive(block));
+    if (Array.isArray(prefill.items) && prefill.items.length) {
+      items.innerHTML = '';
+      prefill.items.forEach(it => items.appendChild(makeItem(it)));
+    } else {
+      items.appendChild(makeItem());
+    }
+    return block;
+  }
+
+  function addWorkUnit(prefill = {}) {
+    const block = makeWorkUnit(prefill);
+    WORK_UNITS.appendChild(block);
+    setActive(block);
+    window.__ps.updateSummary(document);
+  }
+
+  function collectItems(root) {
+    return Array.from(root.querySelectorAll('.js-item-row')).map(row => ({
+      product_name: row.querySelector('.js-product').value.trim(),
+      material: row.querySelector('.js-material').value.trim(),
+      size: row.querySelector('.js-size').value.trim(),
+      finishing: row.querySelector('.js-finishing-input').value.trim(),
+      quantity: parseFloat(row.querySelector('.js-qty').value || 0) || 0,
+      unit: row.querySelector('.js-unit').value.trim(),
+      unit_price: parseFloat(row.querySelector('.js-price').value || 0) || 0,
+      note: row.querySelector('.js-note').value.trim(),
+    })).filter(x => x.product_name);
+  }
+
+  function applyResult(result) {
+    const payload = {
+      product_name: result.product_name || '',
+      material: result.material || '',
+      size: result.size || '',
+      finishing: result.finishing || '',
+      quantity: result.quantity || 1,
+      unit: result.unit || '',
+      unit_price: result.unit_price || 0,
+      note: result.note || '',
+    };
+    const mode = document.querySelector('input[name="mode"]:checked').value;
+    if (mode === 'normal') {
+      addNormalItem(payload);
+    } else {
+      if (!activeWorkUnit) {
+        const first = WORK_UNITS.querySelector('.wu') || addWorkUnit();
+        setActive(first || WORK_UNITS.querySelector('.wu'));
+      }
+      const target = activeWorkUnit || WORK_UNITS.querySelector('.wu');
+      if (target) {
+        target.querySelector('.wu-items').appendChild(makeItem(payload));
+        window.__ps.updateSummary(document);
+      }
+    }
+  }
+
+  async function doSearch() {
+    const q = SEARCH_Q.value.trim();
+    SEARCH_RESULTS.innerHTML = '';
+    if (!q) return;
+    const res = await fetch(`{{ url_for('api_orders_smart_search') }}?q=${encodeURIComponent(q)}`);
+    const data = await res.json();
+    if (!data.length) {
+      SEARCH_RESULTS.innerHTML = '<div class="muted-box">沒有找到相關歷史資料。</div>';
+      return;
+    }
+    data.forEach(item => {
+      const div = document.createElement('div');
+      div.className = 'result';
+      div.innerHTML = `
+        <div class="title">${item.product_name}</div>
+        <div class="meta">${item.customer_name || ''}｜${item.order_number || ''}<br>${item.material || ''} ${item.size || ''} ${item.finishing || ''}<br>${item.quantity || 0} ${item.unit || ''}｜單價 ${window.__ps.fmtMoney(item.unit_price || 0)}</div>
+        <div class="actions"><button type="button" class="btn-secondary">套用到目前工作區</button></div>
+      `;
+      div.querySelector('button').onclick = () => applyResult(item);
+      SEARCH_RESULTS.appendChild(div);
+    });
+  }
+
+  FORM.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const mode = document.querySelector('input[name="mode"]:checked').value;
+    const payload = {
+      mode,
+      customer_id: CUSTOMER_ID.value || null,
+      customer_name: CUSTOMER_INPUT.value.trim(),
+      project_id: PROJECT_ID.value || null,
+      project_name: PROJECT_NAME.value.trim(),
+      project_note: '',
+      status: document.getElementById('status').value,
+      note: document.getElementById('note').value.trim(),
+    };
+    if (mode === 'normal') {
+      payload.items = collectItems(NORMAL_ITEMS);
+    } else {
+      payload.work_units = Array.from(WORK_UNITS.querySelectorAll('.wu')).map((wu, idx) => ({
+        name: wu.querySelector('.wu-name').value.trim(),
+        note: wu.querySelector('.wu-note').value.trim(),
+        sort_order: idx,
+        items: collectItems(wu.querySelector('.wu-items')),
+      })).filter(wu => wu.name);
+    }
+    PAYLOAD.value = JSON.stringify(payload);
+    FORM.submit();
+  });
+
+  document.getElementById('add-normal-item').onclick = () => addNormalItem();
+  document.getElementById('add-work-unit').onclick = () => addWorkUnit();
+  document.getElementById('search-btn').onclick = doSearch;
+  SEARCH_Q.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } });
+
+  document.querySelectorAll('input[name="mode"]').forEach(r => {
+    r.addEventListener('change', () => {
+      const mode = document.querySelector('input[name="mode"]:checked').value;
+      MODE_NORMAL.classList.toggle('hidden', mode !== 'normal');
+      MODE_PROJECT.classList.toggle('hidden', mode !== 'project');
+      if (mode === 'project' && !WORK_UNITS.querySelector('.wu')) addWorkUnit();
+      window.__ps.updateSummary(document);
+    });
+  });
+
+  document.addEventListener('DOMContentLoaded', () => {
+    addNormalItem();
+    addWorkUnit();
+    setActive(WORK_UNITS.querySelector('.wu'));
+    MODE_PROJECT.classList.add('hidden');
+    document.querySelector('input[name="mode"][value="normal"]').checked = true;
+
+    CUSTOMER_INPUT.addEventListener('change', () => {
+      const cid = CUSTOMER_ID.value;
+      PROJECT_ID.value = '';
+      Array.from(PROJECT_ID.options).forEach(o => { if (o.value) o.hidden = o.dataset.customer !== cid; });
+    });
+  });
+</script>
+{% endblock %}

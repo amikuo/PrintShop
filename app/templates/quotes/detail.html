@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ quote.quote_number }}</h1>
+    <p>{{ quote.customer_name }}{% if quote.project_name %}｜{{ quote.project_name }}{% endif %}</p>
+  </div>
+  <div class="top-actions">
+    <a class="btn-secondary" href="{{ url_for('quotes_list') }}">回報價列表</a>
+    {% if not quote.converted_order_id %}
+      <form method="post" action="{{ url_for('quotes_convert', quote_id=quote.id) }}">
+        <button class="btn" type="submit">轉成訂單</button>
+      </form>
+    {% else %}
+      <a class="btn" href="{{ url_for('orders_detail', order_id=quote.converted_order_id) }}">查看已轉訂單</a>
+    {% endif %}
+  </div>
+</div>
+
+<div class="grid cols-3">
+  <div class="card"><div class="muted">狀態</div><div style="margin-top:4px"><span class="badge">{{ quote.status }}</span></div></div>
+  <div class="card"><div class="muted">模式</div><div style="margin-top:4px">{{ '專案' if quote.mode=='project' else '一般' }}</div></div>
+  <div class="card"><div class="muted">建立時間</div><div style="margin-top:4px">{{ quote.created_at[:16] }}</div></div>
+</div>
+
+<div style="height:14px"></div>
+
+{% if quote.mode=='project' and work_units %}
+  {% for wu in work_units %}
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h2 style="margin:0">{{ wu.name }}</h2>
+        <span class="badge">{{ wu.sort_order }}</span>
+      </div>
+      <div style="margin-top:12px" class="table-wrap">
+        <table>
+          <thead><tr><th>品項</th><th>材質</th><th>尺寸</th><th>後加工</th><th>數量</th><th>單位</th><th>單價</th><th>小計</th></tr></thead>
+          <tbody>
+            {% for item in items if item.work_unit_id == wu.id %}
+              <tr>
+                <td><strong>{{ item.product_name }}</strong></td>
+                <td>{{ item.material or '—' }}</td>
+                <td>{{ item.size or '—' }}</td>
+                <td>{{ item.finishing or '—' }}</td>
+                <td>{{ item.quantity }}</td>
+                <td>{{ item.unit or '—' }}</td>
+                <td>{{ item.unit_price|money }}</td>
+                <td>{{ item.subtotal|money }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  {% endfor %}
+{% else %}
+  <div class="card">
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>品項</th><th>材質</th><th>尺寸</th><th>後加工</th><th>數量</th><th>單位</th><th>單價</th><th>小計</th></tr></thead>
+        <tbody>
+          {% for item in items %}
+            <tr>
+              <td><strong>{{ item.product_name }}</strong></td>
+              <td>{{ item.material or '—' }}</td>
+              <td>{{ item.size or '—' }}</td>
+              <td>{{ item.finishing or '—' }}</td>
+              <td>{{ item.quantity }}</td>
+              <td>{{ item.unit or '—' }}</td>
+              <td>{{ item.unit_price|money }}</td>
+              <td>{{ item.subtotal|money }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endif %}
+
+<div class="summary">
+  <div><div class="muted">總額</div><strong>NT$ {{ total|money }}</strong></div>
+  <div class="muted">報價轉訂單後，專案與工作單位結構會保留。</div>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <div class="muted">備註</div>
+  <div style="white-space:pre-wrap">{{ quote.note or '—' }}</div>
+</div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="page-head" style="margin-bottom:10px">
+        <div><h2 style="margin:0">狀態更新</h2></div>
+      </div>
+      <form method="post" action="{{ url_for('quotes_status', quote_id=quote.id) }}" class="row">
+        <select name="status">
+          {% for s in quote_statuses %}
+            <option value="{{ s }}" {% if quote.status == s %}selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+        <button class="btn" type="submit">更新狀態</button>
+      </form>
+    </div>
+
+{% endblock %}
