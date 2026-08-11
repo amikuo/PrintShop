@@ -2,8 +2,8 @@
 {% block content %}
 <div class="page-head">
   <div>
-    <h1>新增報價</h1>
-    <p>先建立客戶與本次報價內容；歷史資料只作為參考與快速帶入。</p>
+    <h1>{{ '修改報價' if draft else '新增報價' }}</h1>
+    <p>{{ '修改既有報價內容；報價單號與建立時間不變。' if draft else '先建立客戶與本次報價內容；歷史資料只作為參考與快速帶入。' }}</p>
   </div>
   <a class="btn-secondary" href="{{ url_for('quotes_list') }}">回報價列表</a>
 </div>
@@ -16,39 +16,46 @@
       <div class="field">
         <label>客戶名稱 *</label>
         <input id="customer-name" name="customer_name" autocomplete="off"
-               placeholder="輸入名稱搜尋既有客戶" required>
-        <input type="hidden" id="customer-id" name="customer_id">
+               placeholder="輸入名稱搜尋既有客戶" value="{{ draft.customer_name if draft else '' }}" required>
+        <input type="hidden" id="customer-id" name="customer_id" value="{{ draft.customer_id if draft else '' }}">
         <div id="customer-results" class="search-results"></div>
       </div>
 
       <div class="customer-meta-grid">
         <div class="field">
           <label>聯絡人</label>
-          <input id="customer-contact" name="customer_contact">
+          <input id="customer-contact" name="customer_contact" value="{{ draft.customer_contact if draft else '' }}">
         </div>
         <div class="field">
           <label>統編</label>
-          <input id="customer-tax-id" name="customer_tax_id">
+          <input id="customer-tax-id" name="customer_tax_id" value="{{ draft.customer_tax_id if draft else '' }}">
         </div>
         <div class="field">
           <label>電話</label>
-          <input id="customer-phone" name="customer_phone">
+          <input id="customer-phone" name="customer_phone" value="{{ draft.customer_phone if draft else '' }}">
         </div>
       </div>
 
       <div class="field">
         <label>報價備註</label>
-        <textarea name="note" rows="3"></textarea>
+        <textarea name="note" rows="3">{{ draft.note if draft else '' }}</textarea>
+      </div>
+
+      <div class="field">
+        <label>交貨時間</label>
+        <input type="date" name="delivery_date" id="delivery-date" value="{{ draft.delivery_date if draft else '' }}" placeholder="YYYY-MM-DD">
+        <div class="muted" style="margin-top:5px">可不填；統一格式 YYYY-MM-DD。</div>
       </div>
 
       <div class="quote-mode-row">
-        <label><input type="radio" name="mode" value="normal" checked> 一般報價</label>
-        <label><input type="radio" name="mode" value="project"> 專案模式</label>
+        <label><input type="radio" name="mode" value="normal" {% if not draft or draft.mode != 'project' %}checked{% endif %}> 一般報價</label>
+        <label><input type="radio" name="mode" value="project" {% if draft and draft.mode == 'project' %}checked{% endif %}> 專案模式</label>
       </div>
 
-      <div id="project-name-wrap" class="field" hidden>
+      <div id="project-name-wrap" class="field" {% if not draft or draft.mode != 'project' %}hidden{% endif %}>
         <label>專案名稱 *</label>
-        <input name="project_name" id="project-name" placeholder="例如：2026 教師甄選">
+        <input type="hidden" name="project_id" value="{{ draft.project_id if draft else '' }}">
+        <input name="project_name" id="project-name" value="{{ draft.project_name if draft else '' }}" placeholder="例如：2026 教師甄選">
       </div>
     </div>
 
@@ -89,7 +96,7 @@
     </div>
     <div class="quote-footer-actions">
       <a class="btn-secondary" href="{{ url_for('quotes_list') }}">取消</a>
-      <button class="btn" type="submit">建立報價</button>
+      <button class="btn" type="submit">{{ '儲存修改' if draft else '建立報價' }}</button>
     </div>
   </section>
 
@@ -150,6 +157,7 @@
 {% block scripts %}
 <script>
 (() => {
+  const initialDraft = {{ (draft or {})|tojson }};
   const normalSection = document.getElementById('normal-section');
   const projectSection = document.getElementById('project-section');
   const projectNameWrap = document.getElementById('project-name-wrap');
@@ -304,7 +312,7 @@
     holder.appendChild(tag);
   }
 
-  function createItem() {
+  function createItem(data = null) {
     const frag = itemTemplate.content.cloneNode(true);
     const row = frag.querySelector('.js-item-row');
     setupProductSearch(row);
@@ -315,14 +323,25 @@
       row.remove();
       recalc();
     };
+    if (data) {
+      row.querySelector('.js-product').value = data.product_name || '';
+      row.querySelector('.js-material').value = data.material || '';
+      row.querySelector('.js-size').value = data.size || '';
+      row.querySelector('.js-qty').value = data.quantity ?? 1;
+      row.querySelector('.js-unit').value = data.unit || '';
+      row.querySelector('.js-price').value = data.unit_price ?? 0;
+      row.querySelector('.js-note').value = data.note || '';
+      setFinishings(row, data.finishing || '');
+    }
     return row;
   }
 
-  function createWorkUnit() {
+  function createWorkUnit(data = null) {
     const frag = workUnitTemplate.content.cloneNode(true);
     const unit = frag.querySelector('.work-unit');
     const items = unit.querySelector('.js-unit-items');
-    items.appendChild(createItem());
+    if (data && Array.isArray(data.items) && data.items.length) data.items.forEach(x => items.appendChild(createItem(x)));
+    else items.appendChild(createItem());
     unit.querySelector('.js-add-unit-item').onclick = () => items.appendChild(createItem());
     unit.querySelector('.js-remove-unit').onclick = () => { unit.remove(); recalc(); };
     setupCustomerSearch(
@@ -330,6 +349,11 @@
       unit.querySelector('.js-work-unit-results'),
       c => unit.querySelector('.js-work-unit-customer-id').value = c.id || ''
     );
+    if (data) {
+      unit.querySelector('.js-work-unit-name').value = data.name || '';
+      unit.querySelector('.js-work-unit-customer-id').value = data.linked_customer_id || '';
+      unit.querySelector('.js-work-unit-note').value = data.note || '';
+    }
     return unit;
   }
 
@@ -387,7 +411,26 @@
   document.getElementById('add-normal-item').onclick = () => normalItems.appendChild(createItem());
   document.getElementById('add-work-unit').onclick = () => workUnits.appendChild(createWorkUnit());
 
-  normalItems.appendChild(createItem());
+  if (initialDraft && Object.keys(initialDraft).length) {
+    const projectMode = initialDraft.mode === 'project';
+    normalSection.hidden = projectMode;
+    projectSection.hidden = !projectMode;
+    projectNameWrap.hidden = !projectMode;
+    document.getElementById('project-name').required = projectMode;
+
+    if (projectMode) {
+      const units = initialDraft.work_units || [];
+      if (units.length) units.forEach(x => workUnits.appendChild(createWorkUnit(x)));
+      else workUnits.appendChild(createWorkUnit());
+    } else {
+      const items = initialDraft.items || [];
+      if (items.length) items.forEach(x => normalItems.appendChild(createItem(x)));
+      else normalItems.appendChild(createItem());
+    }
+  } else {
+    normalItems.appendChild(createItem());
+  }
+  recalc();
 
   document.getElementById('quote-form').addEventListener('submit', () => {
     const serializeItem = row => ({

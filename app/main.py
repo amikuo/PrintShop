@@ -15,6 +15,7 @@ from .database import (
     count_tables,
     create_order_from_payload,
     create_quote_from_payload,
+    update_quote_from_payload,
     convert_quote_to_order,
     display_date,
     init_database,
@@ -73,8 +74,10 @@ def parse_payload() -> dict[str, Any]:
         "customer_tax_id": request.form.get("customer_tax_id", "").strip(),
         "customer_phone": request.form.get("customer_phone", "").strip(),
         "mode": mode,
+        "project_id": request.form.get("project_id", "").strip() or None,
         "project_name": request.form.get("project_name", "").strip(),
         "note": request.form.get("note", "").strip(),
+        "delivery_date": request.form.get("delivery_date", "").strip(),
         "status": "報價中",
         "items": items if mode != "project" else [],
         "work_units": work_units if mode == "project" else [],
@@ -145,13 +148,14 @@ def index():
                 c.name AS customer_name,
                 p.project_name AS project_name,
                 q.status AS status,
-                q.created_at AS created_at
+                q.created_at AS created_at,
+                q.delivery_date AS delivery_date,
+                1 AS type_priority,
+                9 AS delivery_priority
             FROM quotes q
             JOIN customers c ON c.id = q.customer_id
             LEFT JOIN projects p ON p.id = q.project_id
-            WHERE NOT EXISTS (
-                SELECT 1 FROM orders o WHERE o.quote_id = q.id
-            )
+            WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.quote_id = q.id)
 
             UNION ALL
 
@@ -162,12 +166,25 @@ def index():
                 c.name AS customer_name,
                 p.project_name AS project_name,
                 o.status AS status,
-                o.created_at AS created_at
+                o.created_at AS created_at,
+                o.delivery_date AS delivery_date,
+                CASE WHEN o.status IN ('設計中','印製中','待取貨') THEN 0 ELSE 2 END AS type_priority,
+                CASE
+                    WHEN o.status NOT IN ('設計中','印製中','待取貨') THEN 9
+                    WHEN o.delivery_date IS NULL OR o.delivery_date = '' THEN 8
+                    WHEN date(o.delivery_date) < date('now','localtime') THEN 0
+                    ELSE 1
+                END AS delivery_priority
             FROM orders o
             JOIN customers c ON c.id = o.customer_id
             LEFT JOIN projects p ON p.id = o.project_id
         )
-        ORDER BY created_at DESC, record_id DESC
+        ORDER BY
+            type_priority ASC,
+            delivery_priority ASC,
+            CASE WHEN type_priority = 0 AND delivery_date IS NOT NULL AND delivery_date <> '' THEN date(delivery_date) END ASC,
+            created_at DESC,
+            record_id DESC
         LIMIT 12
         """
     ).fetchall()
@@ -757,6 +774,81 @@ def quotes_detail(quote_id):
     total = sum(float(r["subtotal"] or 0) for r in items)
     conn.close()
     return render_template("quotes/detail.html", quote=quote, items=items, work_units=work_units, total=total)
+
+
+
+@app.route("/quotes/<int:quote_id>/edit", methods=["GET", "POST"])
+def quotes_edit(quote_id):
+    conn = db()
+    quote = conn.execute("SELECT * FROM quotes WHERE id=?", (quote_id,)).fetchone()
+    if not quote:
+        conn.close()
+        abort(404)
+    if quote["converted_order_id"]:
+        conn.close()
+        flash("此報價已轉成訂單，請至訂單修改。")
+        return redirect(url_for("quotes_detail", quote_id=quote_id))
+
+    if request.method == "POST":
+        payload = parse_payload()
+        if not payload:
+            conn.close()
+            flash("表單資料有誤。")
+            return redirect(url_for("quotes_edit", quote_id=quote_id))
+        try:
+            update_quote_from_payload(conn, quote_id, payload)
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            conn.close()
+            flash(f"修改報價失敗：{e}")
+            return redirect(url_for("quotes_edit", quote_id=quote_id))
+        conn.close()
+        flash("報價已更新。")
+        return redirect(url_for("quotes_detail", quote_id=quote_id))
+
+    draft = quote_to_payload(conn, quote_id)
+    conn.close()
+    return render_template(
+        "quotes/form.html",
+        customers=[],
+        projects=[],
+        finishing_options=[],
+        mode=draft.get("mode", "normal"),
+        draft=draft,
+        edit_quote_id=quote_id,
+    )
+
+
+@app.post("/quotes/<int:quote_id>/delete")
+def quotes_delete(quote_id):
+    conn = db()
+    quote = conn.execute(
+        "SELECT id,quote_number,converted_order_id FROM quotes WHERE id=?",
+        (quote_id,)
+    ).fetchone()
+    if not quote:
+        conn.close()
+        abort(404)
+    if quote["converted_order_id"]:
+        conn.close()
+        flash("此報價已轉成訂單，不能直接刪除。")
+        return redirect(url_for("quotes_detail", quote_id=quote_id))
+
+    try:
+        # quote_items and quote_work_units are subordinate quote data.
+        conn.execute("DELETE FROM quote_items WHERE quote_id=?", (quote_id,))
+        conn.execute("DELETE FROM quote_work_units WHERE quote_id=?", (quote_id,))
+        conn.execute("DELETE FROM quotes WHERE id=?", (quote_id,))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        flash(f"刪除報價失敗：{e}")
+        return redirect(url_for("quotes_detail", quote_id=quote_id))
+    conn.close()
+    flash(f"報價 {quote['quote_number']} 已刪除。")
+    return redirect(url_for("quotes_list"))
 
 
 @app.route("/quotes/<int:quote_id>/status", methods=["POST"])

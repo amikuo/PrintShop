@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, date
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
@@ -37,14 +38,23 @@ def rows_dict(rows: Iterable[sqlite3.Row]) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+
 def today_key() -> str:
-    return datetime.now().strftime("%y%m%d")
+    return datetime.now(TAIPEI_TZ).strftime("%y%m%d")
 
 
 def display_date(ts: str | None) -> str:
+    """SQLite CURRENT_TIMESTAMP is UTC; display it as Asia/Taipei local time."""
     if not ts:
         return ""
-    return ts[:16]
+    try:
+        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(TAIPEI_TZ).strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        return str(ts)[:16]
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
@@ -77,6 +87,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             project_name TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT '進行中',
             note TEXT DEFAULT '',
+            delivery_date TEXT DEFAULT NULL,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (customer_id) REFERENCES customers(id)
@@ -116,6 +127,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             mode TEXT NOT NULL DEFAULT 'normal',
             status TEXT NOT NULL DEFAULT '報價中',
             note TEXT DEFAULT '',
+            delivery_date TEXT DEFAULT NULL,
             converted_order_id INTEGER DEFAULT NULL,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -434,6 +446,8 @@ def init_database() -> None:
         if column not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
+    _ensure_column("quotes", "delivery_date", "TEXT DEFAULT NULL")
+    _ensure_column("orders", "delivery_date", "TEXT DEFAULT NULL")
     _ensure_column("quote_work_units", "linked_customer_id", "INTEGER DEFAULT NULL")
     _ensure_column("order_work_units", "linked_customer_id", "INTEGER DEFAULT NULL")
 
@@ -760,7 +774,7 @@ def payload_to_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def quote_to_payload(conn: sqlite3.Connection, quote_id: int) -> dict[str, Any]:
     quote = conn.execute(
         """
-        SELECT q.*, c.name AS customer_name
+        SELECT q.*, c.name AS customer_name, c.contact_person, c.tax_id, c.phone
         FROM quotes q
         JOIN customers c ON c.id = q.customer_id
         WHERE q.id = ?
@@ -773,12 +787,19 @@ def quote_to_payload(conn: sqlite3.Connection, quote_id: int) -> dict[str, Any]:
         "mode": quote["mode"],
         "customer_id": quote["customer_id"],
         "customer_name": quote["customer_name"],
+        "customer_contact": "",
+        "customer_tax_id": "",
+        "customer_phone": "",
         "project_id": quote["project_id"],
         "project_name": "",
         "note": quote["note"] or "",
+        "delivery_date": quote["delivery_date"] or "",
         "status": quote["status"] or "報價中",
         "project_status": "進行中",
     }
+    payload["customer_contact"] = quote["contact_person"] or ""
+    payload["customer_tax_id"] = quote["tax_id"] or ""
+    payload["customer_phone"] = quote["phone"] or ""
     if quote["project_id"]:
         project = conn.execute("SELECT project_name FROM projects WHERE id = ?", (quote["project_id"],)).fetchone()
         payload["project_name"] = project["project_name"] if project else ""
@@ -877,8 +898,8 @@ def create_quote_from_payload(conn: sqlite3.Connection, payload: dict[str, Any])
     cur = conn.execute(
         """
         INSERT INTO quotes
-        (quote_number, quote_seq, customer_id, project_id, mode, status, note)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        (quote_number, quote_seq, customer_id, project_id, mode, status, note, delivery_date)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             quote_number,
@@ -888,12 +909,68 @@ def create_quote_from_payload(conn: sqlite3.Connection, payload: dict[str, Any])
             mode,
             payload.get("status", "報價中"),
             payload.get("note", ""),
+            (payload.get("delivery_date") or None),
         ),
     )
     quote_id = int(cur.lastrowid)
     save_quote_structure(conn, quote_id, payload)
     return quote_id
 
+
+
+def update_quote_from_payload(conn: sqlite3.Connection, quote_id: int, payload: dict[str, Any]) -> None:
+    quote = conn.execute("SELECT * FROM quotes WHERE id=?", (quote_id,)).fetchone()
+    if not quote:
+        raise ValueError("Quote not found")
+    if quote["converted_order_id"]:
+        raise ValueError("此報價已轉成訂單，請至訂單修改。")
+
+    customer_id = ensure_customer(conn, payload)
+
+    mode = payload.get("mode", "normal")
+    project_id = None
+    if mode == "project":
+        existing_project_id = payload.get("project_id") or quote["project_id"]
+        if existing_project_id:
+            project_id = int(existing_project_id)
+            project_name = (payload.get("project_name") or "").strip()
+            if project_name:
+                conn.execute(
+                    """
+                    UPDATE projects
+                    SET customer_id=?, project_name=?, updated_at=CURRENT_TIMESTAMP
+                    WHERE id=?
+                    """,
+                    (customer_id, project_name, project_id),
+                )
+        else:
+            project_id = ensure_project(conn, payload, customer_id)
+
+    conn.execute(
+        """
+        UPDATE quotes
+        SET customer_id=?,
+            project_id=?,
+            mode=?,
+            note=?,
+            delivery_date=?,
+            updated_at=CURRENT_TIMESTAMP
+        WHERE id=?
+        """,
+        (
+            customer_id,
+            project_id,
+            mode,
+            payload.get("note", ""),
+            payload.get("delivery_date") or None,
+            quote_id,
+        ),
+    )
+
+    # Rebuild quote detail structure only; quote number/status/created_at stay unchanged.
+    conn.execute("DELETE FROM quote_items WHERE quote_id=?", (quote_id,))
+    conn.execute("DELETE FROM quote_work_units WHERE quote_id=?", (quote_id,))
+    save_quote_structure(conn, quote_id, payload)
 
 def create_order_from_payload(conn: sqlite3.Connection, payload: dict[str, Any], source_quote_id: int | None = None) -> int:
     seq_date, seq = allocate_serial(conn)
@@ -906,8 +983,8 @@ def create_order_from_payload(conn: sqlite3.Connection, payload: dict[str, Any],
     cur = conn.execute(
         """
         INSERT INTO orders
-        (order_number, order_seq, quote_id, customer_id, project_id, mode, status, note)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        (order_number, order_seq, quote_id, customer_id, project_id, mode, status, note, delivery_date)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             order_number,
@@ -918,6 +995,7 @@ def create_order_from_payload(conn: sqlite3.Connection, payload: dict[str, Any],
             mode,
             payload.get("status", "設計中"),
             payload.get("note", ""),
+            (payload.get("delivery_date") or None),
         ),
     )
     order_id = int(cur.lastrowid)
@@ -950,8 +1028,8 @@ def convert_quote_to_order(conn: sqlite3.Connection, quote_id: int) -> int:
     cur = conn.execute(
         """
         INSERT INTO orders
-        (order_number, order_seq, quote_id, customer_id, project_id, mode, status, note)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        (order_number, order_seq, quote_id, customer_id, project_id, mode, status, note, delivery_date)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             order_number,
@@ -962,6 +1040,7 @@ def convert_quote_to_order(conn: sqlite3.Connection, quote_id: int) -> int:
             quote_row["mode"],
             "設計中",
             quote_row["note"] or "",
+            quote_row["delivery_date"] if "delivery_date" in quote_row.keys() else None,
         ),
     )
     order_id = int(cur.lastrowid)

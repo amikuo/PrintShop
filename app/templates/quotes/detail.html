@@ -8,6 +8,11 @@
   <div class="top-actions">
     <a class="btn-secondary" href="{{ url_for('quotes_list') }}">回報價列表</a>
     {% if not quote.converted_order_id %}
+      <a class="btn-secondary" href="{{ url_for('quotes_edit', quote_id=quote.id) }}">修改報價</a>
+      <form method="post" action="{{ url_for('quotes_delete', quote_id=quote.id) }}"
+            onsubmit="return confirm('確定要刪除報價 {{ quote.quote_number }}？\n\n此動作會刪除這張報價及其品項／工作單位，且無法復原。');">
+        <button class="btn-danger-soft" type="submit">刪除報價</button>
+      </form>
       <form method="post" action="{{ url_for('quotes_convert', quote_id=quote.id) }}">
         <button class="btn" type="submit">轉成訂單</button>
       </form>
@@ -17,10 +22,11 @@
   </div>
 </div>
 
-<div class="grid cols-3">
+<div class="grid cols-4">
   <div class="card"><div class="muted">狀態</div><div style="margin-top:4px"><span class="badge">{{ quote.status }}</span></div></div>
   <div class="card"><div class="muted">模式</div><div style="margin-top:4px">{{ '專案' if quote.mode=='project' else '一般' }}</div></div>
-  <div class="card"><div class="muted">建立時間</div><div style="margin-top:4px">{{ quote.created_at[:16] }}</div></div>
+  <div class="card"><div class="muted">建立時間</div><div style="margin-top:4px">{{ quote.created_at|display_date }}</div></div>
+  <div class="card"><div class="muted">交貨時間</div><div style="margin-top:4px">{{ quote.delivery_date or '—' }}</div></div>
 </div>
 
 <div style="height:14px"></div>

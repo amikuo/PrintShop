@@ -213,3 +213,16 @@ tr:last-child td{border-bottom:0}
   .customer-meta-grid,.quote-item-fields,.work-unit-head{grid-template-columns:1fr}
   .quote-footer{align-items:flex-start;gap:12px;flex-direction:column}
 }
+
+
+/* V2.6 quote actions and dashboard status markers */
+.status-inline{display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
+.status-dot{width:9px;height:9px;border-radius:50%;display:inline-block;background:#94a3b8;flex:0 0 auto}
+.status-dot.status-報價中{background:#84cc16}
+.status-dot.status-設計中{background:#f59e0b}
+.status-dot.status-印製中{background:#0ea5e9}
+.status-dot.status-待取貨{background:#ef4444}
+.status-dot.status-完結{background:#64748b}
+.status-dot.status-已轉訂單{background:#64748b}
+.status-dot.status-無下訂報價{background:#94a3b8}
+.top-actions form{margin:0}

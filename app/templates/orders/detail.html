@@ -10,10 +10,11 @@
   </div>
 </div>
 
-<div class="grid cols-3">
+<div class="grid cols-4">
   <div class="card"><div class="muted">狀態</div><div style="margin-top:4px"><span class="badge">{{ order.status }}</span></div></div>
   <div class="card"><div class="muted">模式</div><div style="margin-top:4px">{{ '專案' if order.mode=='project' else '一般' }}</div></div>
-  <div class="card"><div class="muted">建立時間</div><div style="margin-top:4px">{{ order.created_at[:16] }}</div></div>
+  <div class="card"><div class="muted">建立時間</div><div style="margin-top:4px">{{ order.created_at|display_date }}</div></div>
+  <div class="card"><div class="muted">交貨時間</div><div style="margin-top:4px">{{ order.delivery_date or '—' }}</div></div>
 </div>
 
 <div style="height:14px"></div>

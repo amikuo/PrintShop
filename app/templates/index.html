@@ -35,8 +35,8 @@
 <section class="card dashboard-recent">
   <div class="page-head" style="margin-bottom:10px">
     <div>
-      <h2 style="margin:0">最近訂單</h2>
-      <p class="muted" style="margin:5px 0 0">報價與訂單依建立時間合併顯示；Q 開頭代表尚未轉單的報價。</p>
+      <h2 style="margin:0">近期工作</h2>
+      <p class="muted" style="margin:5px 0 0">未交訂單優先；訂單依交貨時間排序，逾期與近期交貨工作優先。Q 開頭代表尚未轉單的報價。</p>
     </div>
     <a href="{{ url_for('orders_list') }}" class="btn-secondary">查看全部訂單</a>
   </div>
@@ -48,8 +48,9 @@
           <th>單號</th>
           <th>客戶</th>
           <th>專案</th>
-          <th>狀態</th>
           <th>建立時間</th>
+          <th>交貨時間</th>
+          <th>狀態</th>
         </tr>
       </thead>
       <tbody>
@@ -64,11 +65,17 @@
             </td>
             <td>{{ x.customer_name }}</td>
             <td>{{ x.project_name or '—' }}</td>
-            <td>{{ x.status }}</td>
             <td>{{ x.created_at|display_date }}</td>
+            <td>{{ x.delivery_date or '—' }}</td>
+            <td>
+              <span class="status-inline">
+                <span>{{ x.status }}</span>
+                <span class="status-dot status-{{ x.status }}"></span>
+              </span>
+            </td>
           </tr>
         {% else %}
-          <tr><td colspan="5" class="muted">目前沒有交易資料。</td></tr>
+          <tr><td colspan="6" class="muted">目前沒有交易資料。</td></tr>
         {% endfor %}
       </tbody>
     </table>

@@ -54,7 +54,13 @@
           </div>
         </div>
 
-        <div class="field"><label>備註</label><textarea id="note"></textarea></div>
+        <div class="grid cols-2" style="grid-template-columns:1fr 1fr; gap:12px;">
+          <div class="field">
+            <label>交貨時間</label>
+            <input type="date" id="delivery_date" placeholder="YYYY-MM-DD">
+          </div>
+          <div class="field"><label>備註</label><textarea id="note"></textarea></div>
+        </div>
       </div>
 
       <div id="normal-mode" class="card">
@@ -352,6 +358,7 @@
       project_name: PROJECT_NAME.value.trim(),
       project_note: '',
       status: document.getElementById('status').value,
+      delivery_date: document.getElementById('delivery_date').value,
       note: document.getElementById('note').value.trim(),
     };
     if (mode === 'normal') {
