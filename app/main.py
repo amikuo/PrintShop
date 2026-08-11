@@ -21,6 +21,7 @@ from .database import (
     init_database,
     list_finishing_options,
     order_to_payload,
+    update_order_from_payload,
     quote_to_payload,
     refresh_expired_quotes,
     row_dict,
@@ -67,6 +68,9 @@ def parse_payload() -> dict[str, Any]:
     if not customer_name and not customer_id:
         return {}
 
+    document_type = request.form.get("document_type", "quote").strip() or "quote"
+    default_status = "設計中" if document_type == "order" else "報價中"
+
     payload = {
         "customer_id": customer_id or None,
         "customer_name": customer_name,
@@ -78,11 +82,19 @@ def parse_payload() -> dict[str, Any]:
         "project_name": request.form.get("project_name", "").strip(),
         "note": request.form.get("note", "").strip(),
         "delivery_date": request.form.get("delivery_date", "").strip(),
-        "status": "報價中",
+        "tax_mode": request.form.get("tax_mode", "none").strip() or "none",
+        "tax_rate": 5,
+        "status": request.form.get("status", default_status).strip() or default_status,
         "items": items if mode != "project" else [],
         "work_units": work_units if mode == "project" else [],
     }
     return payload
+
+
+def calculate_totals(items, tax_mode="none", tax_rate=5):
+    subtotal = sum(float(r["subtotal"] or 0) for r in items)
+    tax = int(subtotal * 0.05 + 0.5) if tax_mode == "tax" else 0
+    return subtotal, tax, subtotal + tax
 
 
 def get_stats():
@@ -477,7 +489,10 @@ def specs_manage(kind, item_id, action):
             if new_name:
                 conn.execute(f"UPDATE {table} SET {field}=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (new_name,item_id))
         elif action == "toggle":
-            conn.execute(f"UPDATE {table} SET is_active=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (0 if row["is_active"] else 1,item_id))
+            if kind == "quick":
+                flash("常用規格不使用停用／恢復；請直接修改或刪除。")
+            else:
+                conn.execute(f"UPDATE {table} SET is_active=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (0 if row["is_active"] else 1,item_id))
         elif action == "delete":
             if kind == "quick":
                 conn.execute("DELETE FROM spec_quick_templates WHERE id=?", (item_id,))
@@ -495,30 +510,54 @@ def specs_manage(kind, item_id, action):
 
 @app.post("/specs/quick")
 def specs_quick_add():
+    template_id = request.form.get("template_id","").strip()
     name = request.form.get("name","").strip()
     product_id = request.form.get("product_id","").strip()
     if not name or not product_id:
         flash("常用規格名稱與品項為必填。")
         return redirect(url_for("specs_list"))
+
     conn = db()
-    cur = conn.execute("""
-        INSERT INTO spec_quick_templates
-        (name,product_id,material_text,size_text,quantity_text,unit_text,unit_price,note,is_active)
-        VALUES(?,?,?,?,?,?,?,?,1)
-    """, (
-        name,int(product_id),
+    values = (
+        name, int(product_id),
         request.form.get("material_text","").strip(),
         request.form.get("size_text","").strip(),
         request.form.get("quantity_text","").strip(),
         request.form.get("unit_text","").strip(),
         request.form.get("unit_price") or None,
-        request.form.get("note","").strip()
-    ))
-    tid = int(cur.lastrowid)
+        request.form.get("note","").strip(),
+    )
+
+    if template_id:
+        existing = conn.execute("SELECT id FROM spec_quick_templates WHERE id=?", (int(template_id),)).fetchone()
+        if not existing:
+            conn.close()
+            abort(404)
+        conn.execute("""
+            UPDATE spec_quick_templates
+            SET name=?,product_id=?,material_text=?,size_text=?,quantity_text=?,
+                unit_text=?,unit_price=?,note=?,is_active=1,updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+        """, values + (int(template_id),))
+        tid = int(template_id)
+        conn.execute("DELETE FROM spec_quick_template_finishings WHERE template_id=?", (tid,))
+    else:
+        cur = conn.execute("""
+            INSERT INTO spec_quick_templates
+            (name,product_id,material_text,size_text,quantity_text,unit_text,unit_price,note,is_active)
+            VALUES(?,?,?,?,?,?,?,?,1)
+        """, values)
+        tid = int(cur.lastrowid)
+
     for f in request.form.getlist("finishings"):
         if f.strip():
-            conn.execute("INSERT OR IGNORE INTO spec_quick_template_finishings(template_id,finishing_name) VALUES(?,?)", (tid,f.strip()))
-    conn.commit(); conn.close()
+            conn.execute(
+                "INSERT OR IGNORE INTO spec_quick_template_finishings(template_id,finishing_name) VALUES(?,?)",
+                (tid,f.strip())
+            )
+    conn.commit()
+    conn.close()
+    flash("常用規格已修改。" if template_id else "常用規格已建立。")
     return redirect(url_for("specs_list"))
 
 
@@ -577,6 +616,15 @@ def api_specs_search():
     """, (q,like)).fetchall()
     conn.close()
     return jsonify({"quick":[dict(x) for x in quick],"products":[dict(x) for x in products]})
+
+
+@app.get("/api/projects/search")
+def api_projects_search():
+    q = request.args.get("q", "").strip()
+    conn = db()
+    rows = search_projects(conn, q, customer_id=None, limit=12) if q else []
+    conn.close()
+    return jsonify(rows)
 
 
 # ---------------- Projects ----------------
@@ -650,6 +698,7 @@ def projects_detail(project_id):
     if not project:
         conn.close()
         abort(404)
+
     quotes = conn.execute(
         """
         SELECT q.*, q.quote_number AS number
@@ -661,16 +710,102 @@ def projects_detail(project_id):
     ).fetchall()
     orders = conn.execute(
         """
-        SELECT o.*, o.order_number AS number
+        SELECT o.*, o.order_number AS number, c.name AS customer_name
         FROM orders o
+        JOIN customers c ON c.id=o.customer_id
         WHERE o.project_id = ?
-        ORDER BY o.id DESC
+        ORDER BY o.id ASC
         """,
         (project_id,),
     ).fetchall()
-    conn.close()
-    return render_template("projects/detail.html", project=project, quotes=quotes, orders=orders, customers=[])
 
+    # Current project overview: combine all work units from every order under this project_id.
+    project_units = []
+    for order in orders:
+        units = conn.execute(
+            """
+            SELECT wu.*, ? AS order_number, ? AS order_status, ? AS order_customer
+            FROM order_work_units wu
+            WHERE wu.order_id=?
+            ORDER BY wu.sort_order, wu.id
+            """,
+            (order["order_number"], order["status"], order["customer_name"], order["id"]),
+        ).fetchall()
+        for wu in units:
+            unit_items = conn.execute(
+                """
+                SELECT oi.*, ? AS order_number, ? AS order_id
+                FROM order_items oi
+                WHERE oi.order_id=? AND oi.work_unit_id=?
+                ORDER BY oi.sort_order,oi.id
+                """,
+                (order["order_number"], order["id"], order["id"], wu["id"]),
+            ).fetchall()
+            project_units.append({
+                "name": wu["name"],
+                "note": wu["note"] or "",
+                "order_number": order["order_number"],
+                "order_id": order["id"],
+                "order_status": order["status"],
+                "order_customer": order["customer_name"],
+                "items": [dict(x) for x in unit_items],
+            })
+
+        # Defensive support for project-mode orders that somehow contain ungrouped items.
+        loose_items = conn.execute(
+            """
+            SELECT oi.*, ? AS order_number, ? AS order_id
+            FROM order_items oi
+            WHERE oi.order_id=? AND oi.work_unit_id IS NULL
+            ORDER BY oi.sort_order,oi.id
+            """,
+            (order["order_number"], order["id"], order["id"]),
+        ).fetchall()
+        if loose_items:
+            project_units.append({
+                "name": "未分工作單位",
+                "note": "",
+                "order_number": order["order_number"],
+                "order_id": order["id"],
+                "order_status": order["status"],
+                "order_customer": order["customer_name"],
+                "items": [dict(x) for x in loose_items],
+            })
+
+    # Before a project has any order, show its unconverted quote work as provisional content.
+    provisional_units = []
+    if not orders:
+        for quote in quotes:
+            if quote["converted_order_id"]:
+                continue
+            units = conn.execute(
+                "SELECT * FROM quote_work_units WHERE quote_id=? ORDER BY sort_order,id",
+                (quote["id"],),
+            ).fetchall()
+            for wu in units:
+                items = conn.execute(
+                    "SELECT * FROM quote_items WHERE quote_id=? AND work_unit_id=? ORDER BY sort_order,id",
+                    (quote["id"], wu["id"]),
+                ).fetchall()
+                provisional_units.append({
+                    "name": wu["name"],
+                    "note": wu["note"] or "",
+                    "quote_number": quote["quote_number"],
+                    "quote_id": quote["id"],
+                    "quote_status": quote["status"],
+                    "items": [dict(x) for x in items],
+                })
+
+    conn.close()
+    return render_template(
+        "projects/detail.html",
+        project=project,
+        quotes=quotes,
+        orders=orders,
+        project_units=project_units,
+        provisional_units=provisional_units,
+        customers=[],
+    )
 
 
 
@@ -771,9 +906,10 @@ def quotes_detail(quote_id):
         "SELECT * FROM quote_work_units WHERE quote_id = ? ORDER BY sort_order, id",
         (quote_id,),
     ).fetchall()
-    total = sum(float(r["subtotal"] or 0) for r in items)
+    subtotal, tax_amount, total = calculate_totals(items, quote["tax_mode"], quote["tax_rate"])
     conn.close()
-    return render_template("quotes/detail.html", quote=quote, items=items, work_units=work_units, total=total)
+    return render_template("quotes/detail.html", quote=quote, items=items, work_units=work_units,
+                           subtotal=subtotal, tax_amount=tax_amount, total=total)
 
 
 
@@ -851,22 +987,6 @@ def quotes_delete(quote_id):
     return redirect(url_for("quotes_list"))
 
 
-@app.route("/quotes/<int:quote_id>/status", methods=["POST"])
-def quotes_status(quote_id):
-    status = request.form.get("status", "").strip()
-    if status not in QUOTE_STATUSES:
-        flash("不支援的報價狀態。")
-        return redirect(url_for("quotes_detail", quote_id=quote_id))
-    conn = db()
-    conn.execute(
-        "UPDATE quotes SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        (status, quote_id),
-    )
-    conn.commit()
-    conn.close()
-    flash("報價狀態已更新。")
-    return redirect(url_for("quotes_detail", quote_id=quote_id))
-
 
 @app.route("/quotes/<int:quote_id>/convert", methods=["POST"])
 def quotes_convert(quote_id):
@@ -918,45 +1038,58 @@ def orders_list():
 
 @app.route("/orders/new", methods=["GET", "POST"])
 def orders_new():
-    conn = db()
-    customers = conn.execute("SELECT id, name, category FROM customers WHERE is_active = 1 ORDER BY name").fetchall()
-    projects = conn.execute(
-        """
-        SELECT p.id, p.customer_id, p.project_name, c.name AS customer_name
-        FROM projects p
-        JOIN customers c ON c.id = p.customer_id
-        ORDER BY p.id DESC
-        """
-    ).fetchall()
-    finishing_options = list_finishing_options(conn)
-
     if request.method == "POST":
+        conn = db()
         payload = parse_payload()
         if not payload:
-            flash("表單資料有誤。")
             conn.close()
+            flash("表單資料有誤。")
             return redirect(url_for("orders_new"))
         try:
             order_id = create_order_from_payload(conn, payload, source_quote_id=None)
             conn.commit()
         except Exception as e:
-            conn.rollback()
-            conn.close()
+            conn.rollback(); conn.close()
             flash(f"建立訂單失敗：{e}")
             return redirect(url_for("orders_new"))
         conn.close()
         flash("訂單已建立。")
         return redirect(url_for("orders_detail", order_id=order_id))
 
+    return render_template("orders/form.html", draft=None, edit_order_id=None)
+
+
+@app.route("/orders/<int:order_id>/edit", methods=["GET", "POST"])
+def orders_edit(order_id):
+    conn = db()
+    order = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+    if not order:
+        conn.close(); abort(404)
+    if order["status"] == "廢單":
+        conn.close()
+        flash("廢單不可直接修改內容。")
+        return redirect(url_for("orders_detail", order_id=order_id))
+
+    if request.method == "POST":
+        payload = parse_payload()
+        if not payload:
+            conn.close()
+            flash("表單資料有誤。")
+            return redirect(url_for("orders_edit", order_id=order_id))
+        try:
+            update_order_from_payload(conn, order_id, payload)
+            conn.commit()
+        except Exception as e:
+            conn.rollback(); conn.close()
+            flash(f"修改訂單失敗：{e}")
+            return redirect(url_for("orders_edit", order_id=order_id))
+        conn.close()
+        flash("訂單已更新。")
+        return redirect(url_for("orders_detail", order_id=order_id))
+
+    draft = order_to_payload(conn, order_id)
     conn.close()
-    return render_template(
-        "orders/form.html",
-        customers=customers,
-        projects=projects,
-        finishing_options=finishing_options,
-        smart_search_endpoint=url_for("api_orders_smart_search"),
-        draft=None,
-    )
+    return render_template("orders/form.html", draft=draft, edit_order_id=order_id)
 
 
 @app.route("/orders/<int:order_id>")
@@ -964,7 +1097,8 @@ def orders_detail(order_id):
     conn = db()
     order = conn.execute(
         """
-        SELECT o.*, c.name AS customer_name, c.contact_person, c.tax_id, c.phone, c.email, p.project_name, q.quote_number
+        SELECT o.*, c.name AS customer_name, c.contact_person, c.tax_id, c.phone, c.email,
+               p.project_name, q.quote_number
         FROM orders o
         JOIN customers c ON c.id = o.customer_id
         LEFT JOIN projects p ON p.id = o.project_id
@@ -974,35 +1108,76 @@ def orders_detail(order_id):
         (order_id,),
     ).fetchone()
     if not order:
-        conn.close()
-        abort(404)
-    items = conn.execute(
-        "SELECT * FROM order_items WHERE order_id = ? ORDER BY sort_order, id",
-        (order_id,),
-    ).fetchall()
-    work_units = conn.execute(
-        "SELECT * FROM order_work_units WHERE order_id = ? ORDER BY sort_order, id",
-        (order_id,),
-    ).fetchall()
-    total = sum(float(r["subtotal"] or 0) for r in items)
+        conn.close(); abort(404)
+    items = conn.execute("SELECT * FROM order_items WHERE order_id=? ORDER BY sort_order,id", (order_id,)).fetchall()
+    work_units = conn.execute("SELECT * FROM order_work_units WHERE order_id=? ORDER BY sort_order,id", (order_id,)).fetchall()
+    payments = conn.execute("SELECT * FROM order_payments WHERE order_id=? ORDER BY paid_at,id", (order_id,)).fetchall()
+    subtotal, tax_amount, total = calculate_totals(items, order["tax_mode"], order["tax_rate"])
+    paid_total = sum(float(x["amount"] or 0) for x in payments)
+    balance = max(total - paid_total, 0)
+    payment_status = "已結清" if total > 0 and balance <= 0 else ("部分收款" if paid_total > 0 else "未收款")
     conn.close()
-    return render_template("orders/detail.html", order=order, items=items, work_units=work_units, total=total)
+    return render_template(
+        "orders/detail.html", order=order, items=items, work_units=work_units,
+        subtotal=subtotal, tax_amount=tax_amount, total=total,
+        payments=payments, paid_total=paid_total, balance=balance, payment_status=payment_status,
+    )
 
 
-@app.route("/orders/<int:order_id>/status", methods=["POST"])
+@app.post("/orders/<int:order_id>/status")
 def orders_status(order_id):
     status = request.form.get("status", "").strip()
-    if status not in ORDER_STATUSES:
+    if status not in ORDER_STATUSES or status == "廢單":
         flash("不支援的訂單狀態。")
         return redirect(url_for("orders_detail", order_id=order_id))
     conn = db()
-    conn.execute(
-        "UPDATE orders SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        (status, order_id),
-    )
-    conn.commit()
-    conn.close()
+    conn.execute("UPDATE orders SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (status,order_id))
+    conn.commit(); conn.close()
     flash("訂單狀態已更新。")
+    return redirect(url_for("orders_detail", order_id=order_id))
+
+
+@app.post("/orders/<int:order_id>/payment")
+def orders_payment(order_id):
+    amount_text = request.form.get("amount","").strip()
+    note = request.form.get("note","").strip()
+    try:
+        amount = float(amount_text)
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        flash("沖帳金額必須大於 0。")
+        return redirect(url_for("orders_detail", order_id=order_id))
+    conn = db()
+    order = conn.execute("SELECT id,status FROM orders WHERE id=?", (order_id,)).fetchone()
+    if not order:
+        conn.close(); abort(404)
+    if order["status"] == "廢單":
+        conn.close()
+        flash("廢單不可沖帳。")
+        return redirect(url_for("orders_detail", order_id=order_id))
+    conn.execute("INSERT INTO order_payments(order_id,amount,note) VALUES(?,?,?)", (order_id,amount,note))
+    conn.commit(); conn.close()
+    flash("沖帳紀錄已新增。")
+    return redirect(url_for("orders_detail", order_id=order_id))
+
+
+@app.post("/orders/<int:order_id>/void")
+def orders_void(order_id):
+    reason = request.form.get("reason","").strip()
+    if not reason:
+        flash("廢單請填寫原因。")
+        return redirect(url_for("orders_detail", order_id=order_id))
+    conn = db()
+    order = conn.execute("SELECT id,status FROM orders WHERE id=?", (order_id,)).fetchone()
+    if not order:
+        conn.close(); abort(404)
+    conn.execute(
+        "UPDATE orders SET status='廢單',void_reason=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        (reason,order_id),
+    )
+    conn.commit(); conn.close()
+    flash("訂單已標記為廢單，歷史資料仍保留。")
     return redirect(url_for("orders_detail", order_id=order_id))
 
 
@@ -1024,7 +1199,7 @@ def admin_export_json():
     for table in [
         "customers", "projects", "spec_presets", "finishing_options",
         "quotes", "quote_work_units", "quote_items",
-        "orders", "order_work_units", "order_items",
+        "orders", "order_work_units", "order_items", "order_payments",
         "daily_sequences",
     ]:
         rows = conn.execute(f"SELECT * FROM {table}").fetchall()

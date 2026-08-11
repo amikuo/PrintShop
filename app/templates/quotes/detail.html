@@ -83,28 +83,19 @@
   </div>
 {% endif %}
 
-<div class="summary">
-  <div><div class="muted">總額</div><strong>NT$ {{ total|money }}</strong></div>
-  <div class="muted">報價轉訂單後，專案與工作單位結構會保留。</div>
+<div class="summary transaction-total-summary">
+  <div class="total-breakdown">
+    <div><span class="muted">品項小計</span><strong>NT$ {{ subtotal|money }}</strong></div>
+    <div><span class="muted">稅別</span><strong>{{ '計稅 5%' if quote.tax_mode == 'tax' else '不計稅' }}</strong></div>
+    <div><span class="muted">稅額</span><strong>NT$ {{ tax_amount|money }}</strong></div>
+    <div class="grand-total"><span>總計</span><strong>NT$ {{ total|money }}</strong></div>
+  </div>
+  <div class="muted">報價轉訂單後，專案、工作單位與稅別設定會保留。</div>
 </div>
 
 <div class="card" style="margin-top:16px">
   <div class="muted">備註</div>
   <div style="white-space:pre-wrap">{{ quote.note or '—' }}</div>
 </div>
-
-    <div class="card" style="margin-top:16px">
-      <div class="page-head" style="margin-bottom:10px">
-        <div><h2 style="margin:0">狀態更新</h2></div>
-      </div>
-      <form method="post" action="{{ url_for('quotes_status', quote_id=quote.id) }}" class="row">
-        <select name="status">
-          {% for s in quote_statuses %}
-            <option value="{{ s }}" {% if quote.status == s %}selected{% endif %}>{{ s }}</option>
-          {% endfor %}
-        </select>
-        <button class="btn" type="submit">更新狀態</button>
-      </form>
-    </div>
 
 {% endblock %}

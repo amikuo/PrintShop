@@ -102,29 +102,43 @@
     <div><strong>常用規格</strong><span class="muted">完整規格組合，一鍵帶入</span></div>
   </summary>
   <div class="spec-master-body">
-    <form method="post" action="{{ url_for('specs_quick_add') }}">
+    <form method="post" action="{{ url_for('specs_quick_add') }}" id="quick-form">
+      <input type="hidden" name="template_id" id="quick-template-id">
       <div class="grid cols-2 quick-grid">
-        <div class="field"><label>名稱 *</label><input name="name" placeholder="例如：標準象牙卡名片" required></div>
+        <div class="field"><label>名稱 *</label><input name="name" id="quick-name" placeholder="例如：標準象牙卡名片" required></div>
         <div class="field"><label>品項 *</label><select name="product_id" id="quick-product" required><option value="">請選擇品項</option>{% for p in products if p.is_active %}<option value="{{p.id}}">{{p.name}}</option>{% endfor %}</select></div>
         <div class="field"><label>材質</label><input name="material_text" id="quick-material" list="quick-material-list"></div>
         <div class="field"><label>尺寸</label><input name="size_text" id="quick-size" list="quick-size-list"></div>
         <div class="field"><label>數量</label><input name="quantity_text" id="quick-quantity" list="quick-quantity-list"></div>
         <div class="field"><label>單位</label><input name="unit_text" id="quick-unit"></div>
-        <div class="field"><label>預設單價</label><input type="number" step="0.01" name="unit_price"></div>
+        <div class="field"><label>預設單價</label><input type="number" step="0.01" name="unit_price" id="quick-unit-price"></div>
         <div class="field field-full"><label>後加工</label><div class="check-tag-list">{% for f in finishings if f.is_active %}<label class="check-tag"><input type="checkbox" name="finishings" value="{{f.name}}"><span>#{{f.name}}</span></label>{% endfor %}</div></div>
-        <div class="field field-full"><label>備註</label><textarea name="note"></textarea></div>
+        <div class="field field-full"><label>備註</label><textarea name="note" id="quick-note"></textarea></div>
       </div>
       <datalist id="quick-material-list"></datalist><datalist id="quick-size-list"></datalist><datalist id="quick-quantity-list"></datalist>
-      <button class="btn">建立常用規格</button>
+      <div class="row gap">
+        <button class="btn" id="quick-submit">建立常用規格</button>
+        <button class="btn-secondary" type="button" id="quick-cancel-edit" hidden>取消修改</button>
+      </div>
     </form>
 
     <div class="quick-template-list">
       {% for q in quick_templates %}
-      <div class="quick-template-row {% if not q.is_active %}is-disabled{% endif %}">
+      <div class="quick-template-row">
         <div><strong>★ {{q.name}}</strong><div class="muted small">{{q.product_name}}{% if q.material_text %}｜{{q.material_text}}{% endif %}{% if q.size_text %}｜{{q.size_text}}{% endif %}{% if q.quantity_text %}｜{{q.quantity_text}}{% endif %}{% if q.unit_text %}{{q.unit_text}}{% endif %}{% if q.finishing_names %}｜#{{q.finishing_names|replace('、',' #')}}{% endif %}</div></div>
         <details class="kebab-menu"><summary>⋯</summary><div class="menu-pop">
-          <form method="post" action="{{ url_for('specs_manage', kind='quick', item_id=q.id, action='toggle') }}"><button>{{'停用' if q.is_active else '恢復使用'}}</button></form>
-          <form method="post" action="{{ url_for('specs_manage', kind='quick', item_id=q.id, action='delete') }}" onsubmit="return confirm('確定刪除常用規格？')"><button class="danger-text">刪除</button></form>
+          <button type="button" class="js-quick-edit"
+            data-id="{{q.id}}"
+            data-name="{{q.name|e}}"
+            data-product-id="{{q.product_id}}"
+            data-material="{{q.material_text|e}}"
+            data-size="{{q.size_text|e}}"
+            data-quantity="{{q.quantity_text|e}}"
+            data-unit="{{q.unit_text|e}}"
+            data-unit-price="{{q.unit_price if q.unit_price is not none else ''}}"
+            data-note="{{q.note|e}}"
+            data-finishings="{{q.finishing_names|e}}">修改</button>
+          <form method="post" action="{{ url_for('specs_manage', kind='quick', item_id=q.id, action='delete') }}" onsubmit="return confirm('確定刪除常用規格？\n\n刪除只會移除快速帶入範本，不會影響既有報價與訂單。')"><button class="danger-text">刪除</button></form>
         </div></details>
       </div>
       {% else %}<div class="empty">尚未建立常用規格。</div>{% endfor %}
@@ -137,21 +151,62 @@
 <script>
 (function(){
   const p = document.getElementById('quick-product');
-  if (!p) return;
+  const form = document.getElementById('quick-form');
+  if (!p || !form) return;
+
   function fill(id,rows,key){
     const dl=document.getElementById(id); dl.innerHTML='';
     (rows||[]).forEach(r=>{const o=document.createElement('option');o.value=r[key];dl.appendChild(o);});
   }
-  async function load(){
-    ['quick-material','quick-size','quick-quantity','quick-unit'].forEach(id=>document.getElementById(id).value='');
+
+  async function loadProduct(clearValues=true){
+    if(clearValues){
+      ['quick-material','quick-size','quick-quantity','quick-unit'].forEach(id=>document.getElementById(id).value='');
+    }
     fill('quick-material-list',[],'name');fill('quick-size-list',[],'name');fill('quick-quantity-list',[],'value_text');
     if(!p.value)return;
     const d=await fetch(`/api/specs/product/${p.value}`).then(r=>r.json());
     if(!d.ok)return;
-    fill('quick-material-list',d.materials,'name');fill('quick-size-list',d.sizes,'name');fill('quick-quantity-list',d.quantities,'value_text');
-    document.getElementById('quick-unit').value=d.product.unit_name||'';
+    fill('quick-material-list',d.materials,'name');
+    fill('quick-size-list',d.sizes,'name');
+    fill('quick-quantity-list',d.quantities,'value_text');
+    if(clearValues) document.getElementById('quick-unit').value=d.product.unit_name||'';
   }
-  p.addEventListener('change',load);
+
+  function resetEdit(){
+    form.reset();
+    document.getElementById('quick-template-id').value='';
+    document.getElementById('quick-submit').textContent='建立常用規格';
+    document.getElementById('quick-cancel-edit').hidden=true;
+    fill('quick-material-list',[],'name');fill('quick-size-list',[],'name');fill('quick-quantity-list',[],'value_text');
+  }
+
+  p.addEventListener('change',()=>loadProduct(true));
+  document.getElementById('quick-cancel-edit').addEventListener('click',resetEdit);
+
+  document.querySelectorAll('.js-quick-edit').forEach(btn=>{
+    btn.addEventListener('click',async ()=>{
+      const d=btn.dataset;
+      document.getElementById('quick-template-id').value=d.id||'';
+      document.getElementById('quick-name').value=d.name||'';
+      p.value=d.productId||'';
+      await loadProduct(false);
+      document.getElementById('quick-material').value=d.material||'';
+      document.getElementById('quick-size').value=d.size||'';
+      document.getElementById('quick-quantity').value=d.quantity||'';
+      document.getElementById('quick-unit').value=d.unit||'';
+      document.getElementById('quick-unit-price').value=d.unitPrice||'';
+      document.getElementById('quick-note').value=d.note||'';
+
+      const selected=(d.finishings||'').split('、').map(x=>x.trim()).filter(Boolean);
+      form.querySelectorAll('input[name="finishings"]').forEach(cb=>cb.checked=selected.includes(cb.value));
+
+      document.getElementById('quick-submit').textContent='儲存修改';
+      document.getElementById('quick-cancel-edit').hidden=false;
+      form.scrollIntoView({behavior:'smooth',block:'start'});
+      const menu=btn.closest('details'); if(menu) menu.open=false;
+    });
+  });
 })();
 </script>
 {% endblock %}

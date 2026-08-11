@@ -180,7 +180,7 @@ tr:last-child td{border-bottom:0}
 .section-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px}
 .quote-item{border-top:1px solid var(--line);padding:12px 0}
 .quote-item:first-child{border-top:0}
-.quote-item-head,.quote-item-fields{display:grid;grid-template-columns:1.35fr 1.15fr 1fr 1.3fr .72fr .72fr .82fr .9fr;gap:8px;align-items:center}
+.quote-item-head,.quote-item-fields{display:grid;grid-template-columns:1.62fr 1.15fr 1fr 1.3fr .72fr .54fr .82fr .9fr;gap:8px;align-items:center}
 .quote-item-head{font-size:12px;font-weight:700;color:#4b5563;padding:0 2px 7px}
 .quote-item-fields input{width:100%;min-width:0}
 .item-subtotal{font-weight:700;white-space:nowrap}
@@ -192,7 +192,7 @@ tr:last-child td{border-bottom:0}
 .quote-total{font-size:26px;font-weight:800;margin-top:2px}
 .quote-footer-actions{display:flex;gap:10px}
 .btn-danger-soft{border:0;background:#f3f4f6;border-radius:8px;padding:9px 12px;cursor:pointer;color:#b42318}
-.search-results,.item-search-results{display:none;position:absolute;left:0;right:0;top:100%;z-index:90;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 14px 30px rgba(15,23,42,.15);padding:6px;max-height:320px;overflow:auto}
+.search-results,.item-search-results{display:none;position:absolute;left:0;right:0;top:100%;z-index:90;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 14px 30px rgba(15,23,42,.15);padding:6px;max-height:320px;overflow:auto}\n.item-search-wrap .item-search-results{right:auto;width:min(520px,calc(100vw - 56px));max-width:none}
 .search-results.show,.item-search-results.show{display:block}
 .field,.item-search-wrap,.work-unit-name-field{position:relative}
 .search-result{width:100%;border:0;background:#fff;padding:9px 10px;border-radius:7px;display:flex;justify-content:space-between;gap:12px;text-align:left;cursor:pointer}
@@ -226,3 +226,64 @@ tr:last-child td{border-bottom:0}
 .status-dot.status-已轉訂單{background:#64748b}
 .status-dot.status-無下訂報價{background:#94a3b8}
 .top-actions form{margin:0}
+
+/* V2.7 unified transaction editor, tax, settlement and void */
+.tax-summary-card{display:flex;justify-content:space-between;gap:24px;align-items:flex-end}
+.tax-controls{display:flex;gap:24px;align-items:flex-end}
+.tax-rate-field{width:130px;margin:0}
+.tax-totals{min-width:260px;display:grid;gap:7px}
+.tax-totals>div,.total-breakdown>div,.settlement-summary>div,.payment-list>div{display:flex;justify-content:space-between;gap:24px;align-items:center}
+.transaction-total-summary{align-items:flex-start}
+.total-breakdown,.settlement-summary{min-width:310px;display:grid;gap:8px}
+.total-breakdown .grand-total{font-size:20px;padding-top:8px;border-top:1px solid var(--line)}
+.order-control-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-top:16px}
+.payment-list{display:grid;gap:6px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+.danger-card{border-color:#fecaca;background:#fffafa}
+@media(max-width:900px){
+  .tax-summary-card,.transaction-total-summary{flex-direction:column;align-items:stretch}
+  .order-control-grid{grid-template-columns:1fr}
+}
+
+/* V2.7.3 project linking and aggregated project overview */
+.project-search-wrap{position:relative}
+.project-search-results{top:calc(100% - 24px)}
+.project-unit-list{display:grid;gap:14px}
+.project-unit{border:1px solid var(--line);border-radius:14px;padding:14px;background:#fff}
+.project-unit.provisional{background:#fbfdff}
+.project-unit-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:12px}
+.project-unit-head h3{margin:0 0 4px}
+.project-source{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.project-transaction-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:850px){.project-transaction-grid{grid-template-columns:1fr}}
+
+
+/* V2.7.3.2 project source transaction layout containment */
+.project-transaction-grid{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+  gap:16px;
+  width:100%;
+}
+.project-transaction-grid>div{
+  min-width:0;
+}
+.project-transaction-grid .table-wrap{
+  width:100%;
+  max-width:100%;
+  overflow-x:auto;
+}
+.project-transaction-grid table{
+  width:100%;
+  min-width:0;
+  table-layout:fixed;
+}
+.project-transaction-grid th,
+.project-transaction-grid td{
+  overflow-wrap:anywhere;
+  word-break:break-word;
+}
+@media(max-width:850px){
+  .project-transaction-grid{
+    grid-template-columns:1fr;
+  }
+}

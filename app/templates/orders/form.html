@@ -2,406 +2,554 @@
 {% block content %}
 <div class="page-head">
   <div>
-    <h1>新增訂單</h1>
-    <p>右欄智慧搜尋可從歷史製作資料找回可參考的品項、材質、尺寸與價格。</p>
+    <h1>{{ '修改訂單' if draft else '新增訂單' }}</h1>
+    <p>{{ '修改既有訂單內容；訂單編號與建立時間不變。' if draft else '訂單與報價使用相同交易版面；訂單可指定目前進度。' }}</p>
   </div>
-  <a class="btn-secondary" href="{{ url_for('orders_list') }}">回訂單列表</a>
+  <a class="btn-secondary" href="{{ url_for('orders_list') }}">回報價列表</a>
 </div>
 
-<form method="post" id="order-form">
-  <input type="hidden" name="payload_json" id="payload_json">
-  <div class="split">
-    <section>
-      <div class="card">
-        <div class="grid cols-3">
-          <div class="field">
-            <label>客戶 *</label>
-            <input id="customer_name" placeholder="輸入客戶名稱" autocomplete="off">
-            <input type="hidden" id="customer_id">
-          </div>
+<form method="post" id="order-form" class="quote-page">
+  <input type="hidden" name="document_type" value="order">
+  <section class="quote-top-grid">
+    <div class="card quote-customer-card">
+      <h2>客戶資料</h2>
 
-          <div class="field">
-            <label>專案（可選）</label>
-            <select id="project_id">
-              <option value="">— 不指定專案 —</option>
-              {% for p in projects %}
-                <option value="{{ p.id }}" data-customer="{{ p.customer_id }}">{{ p.project_name }}｜{{ p.customer_name }}</option>
-              {% endfor %}
-            </select>
-          </div>
+      <div class="field">
+        <label>客戶名稱 *</label>
+        <input id="customer-name" name="customer_name" autocomplete="off"
+               placeholder="輸入名稱搜尋既有客戶" value="{{ draft.customer_name if draft else '' }}" required>
+        <input type="hidden" id="customer-id" name="customer_id" value="{{ draft.customer_id if draft else '' }}">
+        <div id="customer-results" class="search-results"></div>
+      </div>
 
-          <div class="field">
-            <label>模式</label>
-            <div class="row">
-              <label class="badge"><input type="radio" name="mode" value="normal" checked> 一般訂單</label>
-              <label class="badge"><input type="radio" name="mode" value="project"> 專案訂單</label>
-            </div>
-          </div>
+      <div class="customer-meta-grid">
+        <div class="field">
+          <label>聯絡人</label>
+          <input id="customer-contact" name="customer_contact" value="{{ draft.customer_contact if draft else '' }}">
         </div>
-
-        <div class="grid cols-2" style="grid-template-columns:1fr 1fr; gap:12px;">
-          <div class="field">
-            <label>訂單狀態</label>
-            <select id="status">
-              {% for s in order_statuses %}
-                <option value="{{ s }}" {% if s=='設計中' %}selected{% endif %}>{{ s }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div class="field">
-            <label>專案名稱（新專案時）</label>
-            <input id="project_name" placeholder="例如：2026教師甄選">
-          </div>
+        <div class="field">
+          <label>統編</label>
+          <input id="customer-tax-id" name="customer_tax_id" value="{{ draft.customer_tax_id if draft else '' }}">
         </div>
-
-        <div class="grid cols-2" style="grid-template-columns:1fr 1fr; gap:12px;">
-          <div class="field">
-            <label>交貨時間</label>
-            <input type="date" id="delivery_date" placeholder="YYYY-MM-DD">
-          </div>
-          <div class="field"><label>備註</label><textarea id="note"></textarea></div>
+        <div class="field">
+          <label>電話</label>
+          <input id="customer-phone" name="customer_phone" value="{{ draft.customer_phone if draft else '' }}">
         </div>
       </div>
 
-      <div id="normal-mode" class="card">
-        <div class="page-head" style="margin-bottom:12px">
-          <div><h2 style="margin:0">一般訂單品項</h2><p class="muted" style="margin:6px 0 0">直接建立 item，不需工作單位。</p></div>
-          <button class="btn-secondary" type="button" id="add-normal-item">＋ 新增品項</button>
-        </div>
-        <div id="normal-items"></div>
+      <div class="field">
+        <label>訂單備註</label>
+        <textarea name="note" rows="3">{{ draft.note if draft else '' }}</textarea>
       </div>
 
-      <div id="project-mode" class="card hidden">
-        <div class="page-head" style="margin-bottom:12px">
-          <div><h2 style="margin:0">專案訂單</h2><p class="muted" style="margin:6px 0 0">可建立多個工作單位，每個工作單位包含多個品項。</p></div>
-          <button class="btn-secondary" type="button" id="add-work-unit">＋ 新增工作單位</button>
-        </div>
-        <div id="work-units"></div>
+      <div class="field">
+        <label>交貨時間</label>
+        <input type="date" name="delivery_date" id="delivery-date" value="{{ draft.delivery_date if draft else '' }}" placeholder="YYYY-MM-DD">
+        <div class="muted" style="margin-top:5px">可不填；統一格式 YYYY-MM-DD。</div>
       </div>
 
-      <div class="summary">
-        <div>
-          <div class="muted">預估總額</div>
-          <strong>NT$ <span data-summary-total>0</span></strong>
-        </div>
-        <div class="row">
-          <a class="btn-secondary" href="{{ url_for('orders_list') }}">取消</a>
-          <button class="btn" type="submit">建立訂單</button>
-        </div>
+      <div class="field">
+        <label>訂單狀態</label>
+        <select name="status" id="order-status">
+          {% for s in order_statuses %}
+            {% if s != '廢單' %}
+              <option value="{{ s }}" {% if (draft and draft.status == s) or (not draft and s == '設計中') %}selected{% endif %}>{{ s }}</option>
+            {% endif %}
+          {% endfor %}
+        </select>
       </div>
-    </section>
 
-    <aside class="sidebar card">
-      <div class="page-head" style="margin-bottom:10px">
-        <div>
-          <h2 style="margin:0">智慧搜尋</h2>
-          <p class="muted" style="margin:6px 0 0">搜尋歷史製作資料，點擊即可套用到目前工作區。</p>
+      <div class="quote-mode-row">
+        <label><input type="radio" name="mode" value="normal" {% if not draft or draft.mode != 'project' %}checked{% endif %}> 一般訂單</label>
+        <label><input type="radio" name="mode" value="project" {% if draft and draft.mode == 'project' %}checked{% endif %}> 專案模式</label>
+      </div>
+
+      <div id="project-name-wrap" class="field project-search-wrap" {% if not draft or draft.mode != 'project' %}hidden{% endif %}>
+        <label>專案名稱 *</label>
+        <input type="hidden" name="project_id" id="project-id" value="{{ draft.project_id if draft else '' }}">
+        <input name="project_name" id="project-name" autocomplete="off"
+               value="{{ draft.project_name if draft else '' }}"
+               placeholder="輸入搜尋既有專案，或直接輸入新專案名稱">
+        <div id="project-results" class="search-results project-search-results"></div>
+        <div class="muted" id="project-link-hint" style="margin-top:5px">
+          {% if draft and draft.project_id %}已連結既有專案；重新輸入會解除連結並視為新專案。{% else %}選取搜尋結果會連結既有專案；未選取結果則建立新專案。{% endif %}
         </div>
       </div>
-      <div class="searchbox">
-        <input id="search-q" placeholder="例如：海報、A3、嘉義高中">
-        <button class="btn" type="button" id="search-btn">搜尋</button>
+    </div>
+
+    <aside class="card history-card">
+      <h2>歷史紀錄</h2>
+      <div class="field">
+        <input id="history-search" placeholder="搜尋歷史報價／訂單">
       </div>
-      <div class="muted" style="margin-top:10px">點擊「套用」會加到目前使用中的工作單位。</div>
-      <div class="search-results" id="search-results"></div>
+      <div class="muted">
+        右欄智慧搜尋會在下一階段統一套用到報價與訂單；本版先完成相同交易編輯器。
+      </div>
     </aside>
-  </div>
+  </section>
+
+  <section id="normal-section" class="card quote-items-card">
+    <div class="section-head">
+      <h2>一般訂單品項</h2>
+    </div>
+    <div id="normal-items"></div>
+    <button type="button" class="btn-secondary add-item-btn" id="add-normal-item">＋ 新增品項</button>
+  </section>
+
+  <section id="project-section" class="card quote-items-card" hidden>
+    <div class="section-head">
+      <div>
+        <h2>專案模式</h2>
+        <p class="muted">可建立多個工作單位，每個工作單位可有多個品項。</p>
+      </div>
+      <button type="button" class="btn-secondary" id="add-work-unit">＋ 新增工作單位</button>
+    </div>
+    <div id="work-units"></div>
+  </section>
+
+
+  <section class="card tax-summary-card">
+    <div class="tax-controls">
+      <div>
+        <div class="muted">稅別</div>
+        <div class="quote-mode-row">
+          <label><input type="radio" name="tax_mode" value="none" {% if not draft or draft.tax_mode != 'tax' %}checked{% endif %}> 不計稅</label>
+          <label><input type="radio" name="tax_mode" value="tax" {% if draft and draft.tax_mode == 'tax' %}checked{% endif %}> 計稅（5%）</label>
+        </div>
+      </div>
+    </div>
+    <div class="tax-totals">
+      <div><span>品項小計</span><strong id="items-subtotal">NT$ 0</strong></div>
+      <div><span>稅額</span><strong id="tax-amount">NT$ 0</strong></div>
+    </div>
+  </section>
+
+  <section class="quote-footer card">
+    <div>
+      <div class="muted">總計</div>
+      <div class="quote-total" id="quote-total">NT$ 0</div>
+    </div>
+    <div class="quote-footer-actions">
+      <a class="btn-secondary" href="{{ url_for('orders_list') }}">取消</a>
+      <button class="btn" type="submit">{{ '儲存修改' if draft else '建立訂單' }}</button>
+    </div>
+  </section>
+
+  <input type="hidden" name="items_json" id="items-json">
+  <input type="hidden" name="work_units_json" id="work-units-json">
 </form>
 
 <template id="item-template">
-  <div class="item-row js-item-row">
-    <div class="field" style="margin:0">
-      <label class="small">品項</label>
-      <input class="mini js-product" placeholder="名片 / 海報 / DM">
+  <div class="quote-item js-item-row">
+    <div class="quote-item-head">
+      <div>品項</div><div>材質</div><div>尺寸</div><div>後加工</div>
+      <div>數量</div><div>單位</div><div>單價</div><div>小計</div>
     </div>
-    <div class="field" style="margin:0">
-      <label class="small">規格搜尋</label>
-      <input class="mini js-spec-search" placeholder="搜尋常用規格">
-    </div>
-    <div class="field" style="margin:0">
-      <label class="small">材質</label>
-      <input class="mini js-material" placeholder="象牙卡 / 銅版紙">
-    </div>
-    <div class="field" style="margin:0">
-      <label class="small">尺寸</label>
-      <input class="mini js-size" placeholder="A3 / 90×54mm">
-    </div>
-    <div class="field" style="margin:0">
-      <label class="small">後加工 #tag</label>
-      <div class="picker">
-        <input class="mini js-finishing-input" readonly placeholder="點擊選擇後加工">
-        <div class="tagbox js-finishing-tags"></div>
+    <div class="quote-item-fields">
+      <div class="item-field item-search-wrap">
+        <input class="js-product" autocomplete="off" placeholder="填寫搜尋">
+        <div class="item-search-results js-product-results"></div>
       </div>
+      <div class="item-field"><input class="js-material" autocomplete="off" placeholder="填寫搜尋"></div>
+      <div class="item-field"><input class="js-size" autocomplete="off" placeholder="填寫搜尋"></div>
+      <div class="item-field">
+        <input class="js-finishing-input" autocomplete="off" placeholder="填寫搜尋">
+        <div class="finishing-tags js-finishing-tags"></div>
+      </div>
+      <div class="item-field"><input type="number" step="0.01" min="0" class="js-qty" value="1"></div>
+      <div class="item-field"><input class="js-unit"></div>
+      <div class="item-field"><input type="number" step="0.01" min="0" class="js-price" value="0"></div>
+      <div class="item-subtotal js-subtotal">NT$ 0</div>
     </div>
-    <div class="field" style="margin:0">
-      <label class="small">數量</label>
-      <input class="mini js-qty" type="number" step="0.01" value="1">
-    </div>
-    <div class="field" style="margin:0">
-      <label class="small">單位</label>
-      <input class="mini js-unit" placeholder="張 / 盒">
-    </div>
-    <div class="field" style="margin:0">
-      <label class="small">單價</label>
-      <input class="mini js-price" type="number" step="0.01" value="0">
-    </div>
-    <div class="field" style="margin:0">
-      <label class="small">小計</label>
-      <div class="mini" style="padding:11px 10px;background:#f8fafc;border:1px solid var(--line);border-radius:10px">NT$ <span class="js-subtotal">0</span></div>
-    </div>
-    <div class="actions" style="padding-top:25px">
-      <button type="button" class="btn-danger js-remove">刪除</button>
-    </div>
-    <div class="field" style="grid-column:1 / -1; margin:0">
-      <label class="small">備註</label>
-      <input class="mini js-note" placeholder="備註">
+    <div class="quote-item-note">
+      <input class="js-note" placeholder="備註">
+      <button type="button" class="btn-danger-soft js-remove">刪除</button>
     </div>
   </div>
 </template>
 
 <template id="work-unit-template">
-  <div class="wu">
-    <div class="wu-head">
-      <div class="grid" style="grid-template-columns: 1.1fr .9fr; gap:10px; width:100%;">
-        <div class="field" style="margin:0">
-          <label>工作單位名稱</label>
-          <input class="wu-name" placeholder="A校 / B校 / 識別證組">
-        </div>
-        <div class="field" style="margin:0">
-          <label>工作單位備註</label>
-          <input class="wu-note" placeholder="可選">
-        </div>
+  <div class="work-unit">
+    <div class="work-unit-head">
+      <div class="field work-unit-name-field">
+        <label>工作單位名稱</label>
+        <input class="js-work-unit-name" autocomplete="off" placeholder="填寫可搜尋客戶">
+        <input type="hidden" class="js-work-unit-customer-id">
+        <div class="search-results js-work-unit-results"></div>
       </div>
-      <div class="top-actions" style="align-items:flex-end">
-        <button type="button" class="btn-secondary js-add-item">＋ 品項</button>
-        <button type="button" class="btn-danger js-remove-wu">刪除工作單位</button>
+      <div class="field">
+        <label>工作單位備註</label>
+        <input class="js-work-unit-note" placeholder="可填文字">
       </div>
+      <button type="button" class="btn-danger-soft js-remove-unit">刪除工作單位</button>
     </div>
-    <div class="wu-items"></div>
+    <div class="js-unit-items"></div>
+    <button type="button" class="btn-secondary js-add-unit-item">＋ 新增品項</button>
   </div>
 </template>
+{% endblock %}
 
+{% block scripts %}
 <script>
-  const FINISHING_OPTIONS = {{ finishing_options | map(attribute='name') | list | tojson }};
-  const FORM = document.getElementById('order-form');
-  const CUSTOMER_INPUT = document.getElementById('customer_name');
-  const CUSTOMER_ID = document.getElementById('customer_id');
-  const PROJECT_ID = document.getElementById('project_id');
-  const PROJECT_NAME = document.getElementById('project_name');
-  const PAYLOAD = document.getElementById('payload_json');
-  const MODE_NORMAL = document.getElementById('normal-mode');
-  const MODE_PROJECT = document.getElementById('project-mode');
-  const NORMAL_ITEMS = document.getElementById('normal-items');
-  const WORK_UNITS = document.getElementById('work-units');
-  const SEARCH_Q = document.getElementById('search-q');
-  const SEARCH_RESULTS = document.getElementById('search-results');
-  let activeWorkUnit = null;
+(() => {
+  const initialDraft = {{ (draft or {})|tojson }};
+  const normalSection = document.getElementById('normal-section');
+  const projectSection = document.getElementById('project-section');
+  const projectNameWrap = document.getElementById('project-name-wrap');
+  const normalItems = document.getElementById('normal-items');
+  const workUnits = document.getElementById('work-units');
+  const itemTemplate = document.getElementById('item-template');
+  const workUnitTemplate = document.getElementById('work-unit-template');
+  const totalEl = document.getElementById('quote-total');
+  const itemsSubtotalEl = document.getElementById('items-subtotal');
+  const taxAmountEl = document.getElementById('tax-amount');
 
-  if (window.__ps) {
-    window.__ps.customerAutocomplete(CUSTOMER_INPUT, CUSTOMER_ID, "{{ url_for('api_customers_search') }}");
+  const money = n => 'NT$ ' + Number(n || 0).toLocaleString('zh-TW', {maximumFractionDigits: 2});
+
+  async function fetchJson(url) {
+    const res = await fetch(url);
+    return res.ok ? res.json() : null;
   }
 
-  function makeItem(prefill = {}) {
-    const frag = document.getElementById('item-template').content.cloneNode(true);
+  function recalc() {
+    let subtotalTotal = 0;
+    const projectMode = document.querySelector('input[name="mode"]:checked')?.value === 'project';
+    const activeRoot = projectMode ? projectSection : normalSection;
+    activeRoot.querySelectorAll('.js-item-row').forEach(row => {
+      const qty = Number(row.querySelector('.js-qty').value || 0);
+      const price = Number(row.querySelector('.js-price').value || 0);
+      const subtotal = qty * price;
+      row.querySelector('.js-subtotal').textContent = money(subtotal);
+      subtotalTotal += subtotal;
+    });
+    document.querySelectorAll('.js-item-row').forEach(row => {
+      if (activeRoot.contains(row)) return;
+      const qty = Number(row.querySelector('.js-qty').value || 0);
+      const price = Number(row.querySelector('.js-price').value || 0);
+      row.querySelector('.js-subtotal').textContent = money(qty * price);
+    });
+    const taxMode = document.querySelector('input[name="tax_mode"]:checked')?.value || 'none';
+    const tax = taxMode === 'tax' ? Math.round(subtotalTotal * 0.05) : 0;
+    itemsSubtotalEl.textContent = money(subtotalTotal);
+    taxAmountEl.textContent = money(tax);
+    totalEl.textContent = money(subtotalTotal + tax);
+  }
+
+  function setupProductSearch(row) {
+    const input = row.querySelector('.js-product');
+    const box = row.querySelector('.js-product-results');
+    let timer;
+
+    input.addEventListener('input', () => {
+      clearTimeout(timer);
+      const q = input.value.trim();
+      if (!q) { box.innerHTML = ''; box.classList.remove('show'); return; }
+      timer = setTimeout(async () => {
+        const data = await fetchJson(`/api/specs/search?q=${encodeURIComponent(q)}`);
+        if (!data) return;
+        const quick = data.quick || [];
+        const products = data.products || [];
+        let html = '';
+        if (quick.length) {
+          html += '<div class="result-group-label">常用</div>';
+          html += quick.map(x => `
+            <button type="button" class="search-result quick"
+              data-type="quick"
+              data-product="${x.product_name || ''}"
+              data-material="${x.material || ''}"
+              data-size="${x.size || ''}"
+              data-quantity="${x.quantity || ''}"
+              data-unit="${x.unit || ''}"
+              data-price="${x.unit_price ?? ''}"
+              data-finishing="${x.finishing || ''}">
+              <strong>★ ${x.name}</strong>
+              <span>${[x.product_name,x.material,x.size,(x.quantity||'')+(x.unit||'')].filter(Boolean).join('｜')}</span>
+            </button>`).join('');
+        }
+        if (products.length) {
+          html += '<div class="result-group-label">品項</div>';
+          html += products.map(x => `<button type="button" class="search-result" data-type="product" data-product-id="${x.id}" data-product="${x.name}"><strong>${x.name}</strong></button>`).join('');
+        }
+        box.innerHTML = html || '<div class="muted search-empty">沒有符合資料</div>';
+        box.classList.add('show');
+
+        box.querySelectorAll('.search-result').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            input.value = btn.dataset.product || '';
+            if (btn.dataset.type === 'quick') {
+              row.querySelector('.js-material').value = btn.dataset.material || '';
+              row.querySelector('.js-size').value = btn.dataset.size || '';
+              if (btn.dataset.quantity) row.querySelector('.js-qty').value = btn.dataset.quantity;
+              row.querySelector('.js-unit').value = btn.dataset.unit || '';
+              if (btn.dataset.price) row.querySelector('.js-price').value = btn.dataset.price;
+              setFinishings(row, btn.dataset.finishing || '');
+            } else if (btn.dataset.productId) {
+              await loadProductOptions(row, btn.dataset.productId);
+            }
+            box.classList.remove('show');
+            recalc();
+          });
+        });
+      }, 150);
+    });
+  }
+
+  function setFinishings(row, csv) {
+    const holder = row.querySelector('.js-finishing-tags');
+    holder.innerHTML = '';
+    const values = csv.split(',').map(v => v.trim()).filter(Boolean);
+    values.forEach(v => {
+      const tag = document.createElement('span');
+      tag.className = 'finishing-tag';
+      tag.textContent = '#' + v;
+      tag.addEventListener('click', () => tag.remove());
+      holder.appendChild(tag);
+    });
+  }
+
+  async function loadProductOptions(row, productId) {
+    const data = await fetchJson(`/api/specs/product/${productId}`);
+    if (!data || !data.ok) return;
+    row.querySelector('.js-unit').value = data.product.unit_name || '';
+    attachDatalist(row.querySelector('.js-material'), data.materials || [], 'name');
+    attachDatalist(row.querySelector('.js-size'), data.sizes || [], 'name');
+    attachDatalist(row.querySelector('.js-qty'), data.quantities || [], 'value_text');
+    setupFinishingSearch(row, data.finishings || []);
+  }
+
+  function attachDatalist(input, rows, key) {
+    let id = input.dataset.listId;
+    let dl = id ? document.getElementById(id) : null;
+    if (!dl) {
+      id = 'dl-' + Math.random().toString(36).slice(2);
+      input.dataset.listId = id;
+      input.setAttribute('list', id);
+      dl = document.createElement('datalist');
+      dl.id = id;
+      document.body.appendChild(dl);
+    }
+    dl.innerHTML = '';
+    rows.forEach(x => {
+      const option = document.createElement('option');
+      option.value = x[key];
+      dl.appendChild(option);
+    });
+  }
+
+  function setupFinishingSearch(row, options = []) {
+    const input = row.querySelector('.js-finishing-input');
+    input.onkeydown = e => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const value = input.value.trim();
+      if (!value) return;
+      const allowed = !options.length || options.some(x => x.name === value);
+      if (allowed) addFinishingTag(row, value);
+      input.value = '';
+    };
+    attachDatalist(input, options, 'name');
+  }
+
+  function addFinishingTag(row, value) {
+    const holder = row.querySelector('.js-finishing-tags');
+    if ([...holder.children].some(x => x.dataset.value === value)) return;
+    const tag = document.createElement('span');
+    tag.className = 'finishing-tag';
+    tag.dataset.value = value;
+    tag.textContent = '#' + value + ' ×';
+    tag.onclick = () => tag.remove();
+    holder.appendChild(tag);
+  }
+
+  function createItem(data = null) {
+    const frag = itemTemplate.content.cloneNode(true);
     const row = frag.querySelector('.js-item-row');
-    row.querySelector('.js-product').value = prefill.product_name || '';
-    row.querySelector('.js-material').value = prefill.material || '';
-    row.querySelector('.js-size').value = prefill.size || '';
-    row.querySelector('.js-qty').value = prefill.quantity ?? 1;
-    row.querySelector('.js-unit').value = prefill.unit || '';
-    row.querySelector('.js-price').value = prefill.unit_price ?? 0;
-    row.querySelector('.js-note').value = prefill.note || '';
-    row.querySelector('.js-subtotal').textContent = window.__ps.fmtMoney((prefill.quantity || 1) * (prefill.unit_price || 0));
-
-    const finishingInput = row.querySelector('.js-finishing-input');
-    const finishingTags = row.querySelector('.js-finishing-tags');
-    if (prefill.finishing) finishingInput.value = prefill.finishing;
-    window.__ps.finishingPicker(finishingInput, finishingTags, FINISHING_OPTIONS.map(name => ({name})));
-
-    row.querySelector('.js-qty').addEventListener('input', () => window.__ps.recalcRow(row));
-    row.querySelector('.js-price').addEventListener('input', () => window.__ps.recalcRow(row));
+    setupProductSearch(row);
+    setupFinishingSearch(row);
+    row.querySelector('.js-qty').addEventListener('input', recalc);
+    row.querySelector('.js-price').addEventListener('input', recalc);
     row.querySelector('.js-remove').onclick = () => {
       row.remove();
-      window.__ps.updateSummary(document);
+      recalc();
     };
-
-    window.__ps.specAutocomplete(
-      row.querySelector('.js-spec-search'),
-      (preset) => {
-        row.querySelector('.js-product').value = preset.product_name || '';
-        row.querySelector('.js-material').value = preset.material || '';
-        row.querySelector('.js-size').value = preset.size || '';
-        row.querySelector('.js-unit').value = preset.unit || '';
-      },
-      "{{ url_for('api_specs_search') }}"
-    );
-
+    if (data) {
+      row.querySelector('.js-product').value = data.product_name || '';
+      row.querySelector('.js-material').value = data.material || '';
+      row.querySelector('.js-size').value = data.size || '';
+      row.querySelector('.js-qty').value = data.quantity ?? 1;
+      row.querySelector('.js-unit').value = data.unit || '';
+      row.querySelector('.js-price').value = data.unit_price ?? 0;
+      row.querySelector('.js-note').value = data.note || '';
+      setFinishings(row, data.finishing || '');
+    }
     return row;
   }
 
-  function addNormalItem(prefill = {}) {
-    const row = makeItem(prefill);
-    NORMAL_ITEMS.appendChild(row);
-    window.__ps.updateSummary(document);
-  }
-
-  let wuCounter = 0;
-  function setActive(block) {
-    activeWorkUnit = block;
-    document.querySelectorAll('.wu').forEach(w => w.classList.toggle('active', w === block));
-  }
-
-  function makeWorkUnit(prefill = {}) {
-    const frag = document.getElementById('work-unit-template').content.cloneNode(true);
-    const block = frag.querySelector('.wu');
-    const items = block.querySelector('.wu-items');
-    block.dataset.index = String(wuCounter++);
-    block.querySelector('.wu-name').value = prefill.name || '';
-    block.querySelector('.wu-note').value = prefill.note || '';
-    block.querySelector('.js-add-item').onclick = () => { items.appendChild(makeItem()); window.__ps.updateSummary(document); };
-    block.querySelector('.js-remove-wu').onclick = () => {
-      if (WORK_UNITS.querySelectorAll('.wu').length > 1) {
-        const next = block.nextElementSibling || block.previousElementSibling;
-        block.remove();
-        if (next) setActive(next);
-        window.__ps.updateSummary(document);
-      }
-    };
-    block.addEventListener('click', () => setActive(block));
-    if (Array.isArray(prefill.items) && prefill.items.length) {
-      items.innerHTML = '';
-      prefill.items.forEach(it => items.appendChild(makeItem(it)));
-    } else {
-      items.appendChild(makeItem());
+  function createWorkUnit(data = null) {
+    const frag = workUnitTemplate.content.cloneNode(true);
+    const unit = frag.querySelector('.work-unit');
+    const items = unit.querySelector('.js-unit-items');
+    if (data && Array.isArray(data.items) && data.items.length) data.items.forEach(x => items.appendChild(createItem(x)));
+    else items.appendChild(createItem());
+    unit.querySelector('.js-add-unit-item').onclick = () => items.appendChild(createItem());
+    unit.querySelector('.js-remove-unit').onclick = () => { unit.remove(); recalc(); };
+    setupCustomerSearch(
+      unit.querySelector('.js-work-unit-name'),
+      unit.querySelector('.js-work-unit-results'),
+      c => unit.querySelector('.js-work-unit-customer-id').value = c.id || ''
+    );
+    if (data) {
+      unit.querySelector('.js-work-unit-name').value = data.name || '';
+      unit.querySelector('.js-work-unit-customer-id').value = data.linked_customer_id || '';
+      unit.querySelector('.js-work-unit-note').value = data.note || '';
     }
-    return block;
+    return unit;
   }
 
-  function addWorkUnit(prefill = {}) {
-    const block = makeWorkUnit(prefill);
-    WORK_UNITS.appendChild(block);
-    setActive(block);
-    window.__ps.updateSummary(document);
-  }
-
-  function collectItems(root) {
-    return Array.from(root.querySelectorAll('.js-item-row')).map(row => ({
-      product_name: row.querySelector('.js-product').value.trim(),
-      material: row.querySelector('.js-material').value.trim(),
-      size: row.querySelector('.js-size').value.trim(),
-      finishing: row.querySelector('.js-finishing-input').value.trim(),
-      quantity: parseFloat(row.querySelector('.js-qty').value || 0) || 0,
-      unit: row.querySelector('.js-unit').value.trim(),
-      unit_price: parseFloat(row.querySelector('.js-price').value || 0) || 0,
-      note: row.querySelector('.js-note').value.trim(),
-    })).filter(x => x.product_name);
-  }
-
-  function applyResult(result) {
-    const payload = {
-      product_name: result.product_name || '',
-      material: result.material || '',
-      size: result.size || '',
-      finishing: result.finishing || '',
-      quantity: result.quantity || 1,
-      unit: result.unit || '',
-      unit_price: result.unit_price || 0,
-      note: result.note || '',
-    };
-    const mode = document.querySelector('input[name="mode"]:checked').value;
-    if (mode === 'normal') {
-      addNormalItem(payload);
-    } else {
-      if (!activeWorkUnit) {
-        const first = WORK_UNITS.querySelector('.wu') || addWorkUnit();
-        setActive(first || WORK_UNITS.querySelector('.wu'));
-      }
-      const target = activeWorkUnit || WORK_UNITS.querySelector('.wu');
-      if (target) {
-        target.querySelector('.wu-items').appendChild(makeItem(payload));
-        window.__ps.updateSummary(document);
-      }
-    }
-  }
-
-  async function doSearch() {
-    const q = SEARCH_Q.value.trim();
-    SEARCH_RESULTS.innerHTML = '';
-    if (!q) return;
-    const res = await fetch(`{{ url_for('api_orders_smart_search') }}?q=${encodeURIComponent(q)}`);
-    const data = await res.json();
-    if (!data.length) {
-      SEARCH_RESULTS.innerHTML = '<div class="muted-box">沒有找到相關歷史資料。</div>';
-      return;
-    }
-    data.forEach(item => {
-      const div = document.createElement('div');
-      div.className = 'result';
-      div.innerHTML = `
-        <div class="title">${item.product_name}</div>
-        <div class="meta">${item.customer_name || ''}｜${item.order_number || ''}<br>${item.material || ''} ${item.size || ''} ${item.finishing || ''}<br>${item.quantity || 0} ${item.unit || ''}｜單價 ${window.__ps.fmtMoney(item.unit_price || 0)}</div>
-        <div class="actions"><button type="button" class="btn-secondary">套用到目前工作區</button></div>
-      `;
-      div.querySelector('button').onclick = () => applyResult(item);
-      SEARCH_RESULTS.appendChild(div);
+  function setupCustomerSearch(input, box, onSelect) {
+    let timer;
+    input.addEventListener('input', () => {
+      clearTimeout(timer);
+      const q = input.value.trim();
+      if (!q) { box.innerHTML=''; box.classList.remove('show'); return; }
+      timer = setTimeout(async () => {
+        const data = await fetchJson(`/api/customers/search?q=${encodeURIComponent(q)}`);
+        const rows = Array.isArray(data) ? data : (data?.customers || []);
+        box.innerHTML = rows.map(c => `
+          <button type="button" class="search-result"
+            data-json='${JSON.stringify(c).replaceAll("'", "&#39;")}'>
+            <strong>${c.name || ''}</strong>
+            <span>${c.contact_person || c.contact || ''} ${c.phone || ''}</span>
+          </button>`).join('');
+        box.classList.toggle('show', rows.length > 0);
+        box.querySelectorAll('.search-result').forEach(btn => {
+          btn.onclick = () => {
+            const c = JSON.parse(btn.dataset.json);
+            input.value = c.name || '';
+            onSelect(c);
+            box.classList.remove('show');
+          };
+        });
+      }, 150);
     });
   }
 
-  FORM.addEventListener('submit', (e) => {
-    e.preventDefault();
-    const mode = document.querySelector('input[name="mode"]:checked').value;
-    const payload = {
-      mode,
-      customer_id: CUSTOMER_ID.value || null,
-      customer_name: CUSTOMER_INPUT.value.trim(),
-      project_id: PROJECT_ID.value || null,
-      project_name: PROJECT_NAME.value.trim(),
-      project_note: '',
-      status: document.getElementById('status').value,
-      delivery_date: document.getElementById('delivery_date').value,
-      note: document.getElementById('note').value.trim(),
-    };
-    if (mode === 'normal') {
-      payload.items = collectItems(NORMAL_ITEMS);
-    } else {
-      payload.work_units = Array.from(WORK_UNITS.querySelectorAll('.wu')).map((wu, idx) => ({
-        name: wu.querySelector('.wu-name').value.trim(),
-        note: wu.querySelector('.wu-note').value.trim(),
-        sort_order: idx,
-        items: collectItems(wu.querySelector('.wu-items')),
-      })).filter(wu => wu.name);
+  const projectInput = document.getElementById('project-name');
+  const projectIdInput = document.getElementById('project-id');
+  const projectResults = document.getElementById('project-results');
+  const projectHint = document.getElementById('project-link-hint');
+  let projectTimer;
+
+  projectInput.addEventListener('input', () => {
+    // Typing means the user has not confirmed an existing project yet.
+    projectIdInput.value = '';
+    projectHint.textContent = '尚未連結既有專案；若不選搜尋結果，儲存時會建立新專案。';
+    clearTimeout(projectTimer);
+    const q = projectInput.value.trim();
+    if (!q) {
+      projectResults.innerHTML = '';
+      projectResults.classList.remove('show');
+      return;
     }
-    PAYLOAD.value = JSON.stringify(payload);
-    FORM.submit();
+    projectTimer = setTimeout(async () => {
+      const rows = await fetchJson(`/api/projects/search?q=${encodeURIComponent(q)}`);
+      const data = Array.isArray(rows) ? rows : [];
+      projectResults.innerHTML = data.map(p => `
+        <button type="button" class="search-result project-result"
+          data-id="${p.id}" data-name="${p.project_name}">
+          <strong>${p.project_name}</strong>
+          <span>請款客戶：${p.customer_name || '—'}｜${p.status || '—'}</span>
+        </button>`).join('') || '<div class="muted search-empty">沒有既有專案；保留目前文字即可建立新專案。</div>';
+      projectResults.classList.add('show');
+      projectResults.querySelectorAll('.project-result').forEach(btn => {
+        btn.onclick = () => {
+          projectIdInput.value = btn.dataset.id || '';
+          projectInput.value = btn.dataset.name || '';
+          projectHint.textContent = `已連結既有專案 #${btn.dataset.id}；資料關聯將使用 project_id。`;
+          projectResults.classList.remove('show');
+        };
+      });
+    }, 150);
   });
 
-  document.getElementById('add-normal-item').onclick = () => addNormalItem();
-  document.getElementById('add-work-unit').onclick = () => addWorkUnit();
-  document.getElementById('search-btn').onclick = doSearch;
-  SEARCH_Q.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } });
+  setupCustomerSearch(
+    document.getElementById('customer-name'),
+    document.getElementById('customer-results'),
+    c => {
+      document.getElementById('customer-id').value = c.id || '';
+      document.getElementById('customer-contact').value = c.contact_person || c.contact || '';
+      document.getElementById('customer-tax-id').value = c.tax_id || c.tax_number || '';
+      document.getElementById('customer-phone').value = c.phone || '';
+    }
+  );
+
+  // 稅別切換必須即時重算；使用表單層事件委派，新增/修改畫面皆共用。
+  document.getElementById('order-form').addEventListener('change', (e) => {
+    if (e.target && e.target.name === 'tax_mode') recalc();
+  });
+  document.getElementById('order-form').addEventListener('click', (e) => {
+    if (e.target && e.target.name === 'tax_mode') recalc();
+  });
 
   document.querySelectorAll('input[name="mode"]').forEach(r => {
     r.addEventListener('change', () => {
-      const mode = document.querySelector('input[name="mode"]:checked').value;
-      MODE_NORMAL.classList.toggle('hidden', mode !== 'normal');
-      MODE_PROJECT.classList.toggle('hidden', mode !== 'project');
-      if (mode === 'project' && !WORK_UNITS.querySelector('.wu')) addWorkUnit();
-      window.__ps.updateSummary(document);
+      const project = document.querySelector('input[name="mode"]:checked').value === 'project';
+      normalSection.hidden = project;
+      projectSection.hidden = !project;
+      projectNameWrap.hidden = !project;
+      document.getElementById('project-name').required = project;
+      if (project && !workUnits.children.length) workUnits.appendChild(createWorkUnit());
+      recalc();
     });
   });
 
-  document.addEventListener('DOMContentLoaded', () => {
-    addNormalItem();
-    addWorkUnit();
-    setActive(WORK_UNITS.querySelector('.wu'));
-    MODE_PROJECT.classList.add('hidden');
-    document.querySelector('input[name="mode"][value="normal"]').checked = true;
+  document.getElementById('add-normal-item').onclick = () => normalItems.appendChild(createItem());
+  document.getElementById('add-work-unit').onclick = () => workUnits.appendChild(createWorkUnit());
 
-    CUSTOMER_INPUT.addEventListener('change', () => {
-      const cid = CUSTOMER_ID.value;
-      PROJECT_ID.value = '';
-      Array.from(PROJECT_ID.options).forEach(o => { if (o.value) o.hidden = o.dataset.customer !== cid; });
+  if (initialDraft && Object.keys(initialDraft).length) {
+    const projectMode = initialDraft.mode === 'project';
+    normalSection.hidden = projectMode;
+    projectSection.hidden = !projectMode;
+    projectNameWrap.hidden = !projectMode;
+    document.getElementById('project-name').required = projectMode;
+
+    if (projectMode) {
+      const units = initialDraft.work_units || [];
+      if (units.length) units.forEach(x => workUnits.appendChild(createWorkUnit(x)));
+      else workUnits.appendChild(createWorkUnit());
+    } else {
+      const items = initialDraft.items || [];
+      if (items.length) items.forEach(x => normalItems.appendChild(createItem(x)));
+      else normalItems.appendChild(createItem());
+    }
+  } else {
+    normalItems.appendChild(createItem());
+  }
+  recalc();
+
+  document.getElementById('order-form').addEventListener('submit', () => {
+    const serializeItem = row => ({
+      product_name: row.querySelector('.js-product').value.trim(),
+      material: row.querySelector('.js-material').value.trim(),
+      size: row.querySelector('.js-size').value.trim(),
+      finishing: [...row.querySelectorAll('.finishing-tag')].map(x => (x.dataset.value || x.textContent.replace(/^#| ×$/g,''))).join(','),
+      quantity: row.querySelector('.js-qty').value,
+      unit: row.querySelector('.js-unit').value.trim(),
+      unit_price: row.querySelector('.js-price').value,
+      note: row.querySelector('.js-note').value.trim()
     });
+
+    document.getElementById('items-json').value =
+      JSON.stringify([...normalItems.querySelectorAll('.js-item-row')].map(serializeItem));
+
+    document.getElementById('work-units-json').value =
+      JSON.stringify([...workUnits.querySelectorAll('.work-unit')].map(unit => ({
+        name: unit.querySelector('.js-work-unit-name').value.trim(),
+        linked_customer_id: unit.querySelector('.js-work-unit-customer-id').value || null,
+        note: unit.querySelector('.js-work-unit-note').value.trim(),
+        items: [...unit.querySelectorAll('.js-item-row')].map(serializeItem)
+      })));
   });
+})();
 </script>
 {% endblock %}

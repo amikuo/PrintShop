@@ -3,7 +3,7 @@
 <div class="page-head">
   <div>
     <h1>{{ project.project_name if project else '新增專案' }}</h1>
-    <p>專案用於連結客戶、報價與訂單，並保留工作單位結構。</p>
+    <p>{% if project %}專案頁呈現此 project_id 目前完整的工作內容，而非以名稱比對單據。{% else %}建立獨立專案資料。{% endif %}</p>
   </div>
   <a class="btn-secondary" href="{{ url_for('projects_list') }}">回專案列表</a>
 </div>
@@ -29,66 +29,116 @@
     <div class="field"><label>備註</label><textarea name="note"></textarea></div>
     <div class="sticky-actions"><button class="btn" type="submit">儲存</button></div>
   </form>
-
-  <script>
-  document.addEventListener('DOMContentLoaded', () => {
-    const input = document.getElementById('customer_name');
-    const hidden = document.getElementById('customer_id');
-    if(window.__ps) window.__ps.customerAutocomplete(input, hidden, "{{ url_for('api_customers_search') }}");
-  });
-  </script>
 {% else %}
   <div class="card">
     <div class="grid cols-3">
-      <div><div class="muted">客戶</div><div><strong>{{ project.customer_name }}</strong></div></div>
+      <div><div class="muted">請款客戶</div><div><strong>{{ project.customer_name }}</strong></div></div>
       <div><div class="muted">狀態</div><div><span class="badge">{{ project.status }}</span></div></div>
-      <div><div class="muted">建立</div><div>{{ project.created_at[:16] }}</div></div>
+      <div><div class="muted">建立時間</div><div>{{ project.created_at|display_date }}</div></div>
     </div>
     <div style="margin-top:12px"><div class="muted">備註</div><div>{{ project.note or '—' }}</div></div>
   </div>
 
-  <div class="grid cols-2" style="grid-template-columns:1fr 1fr; gap:16px;">
-    <div class="card">
-      <div class="page-head" style="margin-bottom:10px">
-        <h2 style="margin:0">關聯報價</h2>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>報價單號</th><th>模式</th><th>狀態</th></tr></thead>
-          <tbody>
-          {% for q in quotes %}
-            <tr>
-              <td><a href="{{ url_for('quotes_detail', quote_id=q.id) }}"><strong>{{ q.number }}</strong></a></td>
-              <td>{{ '專案' if q.mode=='project' else '一般' }}</td>
-              <td>{{ q.status }}</td>
-            </tr>
-          {% else %}
-            <tr><td colspan="3" class="muted">尚未有報價。</td></tr>
-          {% endfor %}
-          </tbody>
-        </table>
+  <div class="card project-overview-card" style="margin-top:16px">
+    <div class="page-head" style="margin-bottom:12px">
+      <div>
+        <h2 style="margin:0">專案目前內容</h2>
+        <p class="muted" style="margin:5px 0 0">
+          {% if orders %}整合此專案所有訂單的工作單位與品項。{% else %}目前尚無正式訂單，先顯示未轉單報價中的暫定內容。{% endif %}
+        </p>
       </div>
     </div>
 
-    <div class="card">
-      <div class="page-head" style="margin-bottom:10px">
-        <h2 style="margin:0">關聯訂單</h2>
+    {% if project_units %}
+      <div class="project-unit-list">
+      {% for wu in project_units %}
+        <section class="project-unit">
+          <div class="project-unit-head">
+            <div>
+              <h3>{{ wu.name }}</h3>
+              {% if wu.note %}<div class="muted">{{ wu.note }}</div>{% endif %}
+            </div>
+            <div class="project-source">
+              <a href="{{ url_for('orders_detail', order_id=wu.order_id) }}"><strong>{{ wu.order_number }}</strong></a>
+              <span class="badge">{{ wu.order_status }}</span>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>品項</th><th>材質</th><th>尺寸</th><th>後加工</th><th>數量</th><th>單位</th><th>單價</th><th>小計</th></tr></thead>
+              <tbody>
+              {% for item in wu['items'] %}
+                <tr>
+                  <td><strong>{{ item.product_name }}</strong>{% if item.note %}<div class="muted small">{{ item.note }}</div>{% endif %}</td>
+                  <td>{{ item.material or '—' }}</td><td>{{ item.size or '—' }}</td><td>{{ item.finishing or '—' }}</td>
+                  <td>{{ item.quantity }}</td><td>{{ item.unit or '—' }}</td>
+                  <td>{{ item.unit_price|money }}</td><td>{{ item.subtotal|money }}</td>
+                </tr>
+              {% else %}
+                <tr><td colspan="8" class="muted">此工作單位目前沒有品項。</td></tr>
+              {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      {% endfor %}
       </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>訂單編號</th><th>模式</th><th>狀態</th></tr></thead>
+    {% elif provisional_units %}
+      <div class="project-unit-list">
+      {% for wu in provisional_units %}
+        <section class="project-unit provisional">
+          <div class="project-unit-head">
+            <div><h3>{{ wu.name }}</h3>{% if wu.note %}<div class="muted">{{ wu.note }}</div>{% endif %}</div>
+            <div class="project-source">
+              <span class="muted">暫定報價</span>
+              <a href="{{ url_for('quotes_detail', quote_id=wu.quote_id) }}"><strong>{{ wu.quote_number }}</strong></a>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>品項</th><th>材質</th><th>尺寸</th><th>後加工</th><th>數量</th><th>單位</th><th>單價</th><th>小計</th></tr></thead>
+              <tbody>
+              {% for item in wu['items'] %}
+                <tr><td><strong>{{ item.product_name }}</strong></td><td>{{ item.material or '—' }}</td><td>{{ item.size or '—' }}</td>
+                <td>{{ item.finishing or '—' }}</td><td>{{ item.quantity }}</td><td>{{ item.unit or '—' }}</td>
+                <td>{{ item.unit_price|money }}</td><td>{{ item.subtotal|money }}</td></tr>
+              {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      {% endfor %}
+      </div>
+    {% else %}
+      <div class="muted-box">目前尚未有可顯示的專案工作內容。</div>
+    {% endif %}
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h2 style="margin-top:0">來源交易紀錄</h2>
+    <p class="muted">此區只作追查來源；專案主要內容以上方整合總覽為準。</p>
+    <div class="project-transaction-grid">
+      <div>
+        <h3>訂單</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>訂單編號</th><th>狀態</th><th>建立</th></tr></thead>
           <tbody>
           {% for o in orders %}
-            <tr>
-              <td><a href="{{ url_for('orders_detail', order_id=o.id) }}"><strong>{{ o.number }}</strong></a></td>
-              <td>{{ '專案' if o.mode=='project' else '一般' }}</td>
-              <td>{{ o.status }}</td>
-            </tr>
-          {% else %}
-            <tr><td colspan="3" class="muted">尚未有訂單。</td></tr>
-          {% endfor %}
+            <tr><td><a href="{{ url_for('orders_detail', order_id=o.id) }}"><strong>{{ o.number }}</strong></a></td><td>{{ o.status }}</td><td>{{ o.created_at|display_date }}</td></tr>
+          {% else %}<tr><td colspan="3" class="muted">尚未有訂單。</td></tr>{% endfor %}
           </tbody>
-        </table>
+        </table></div>
+      </div>
+      <div>
+        <h3>報價</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>報價單號</th><th>狀態</th><th>建立</th></tr></thead>
+          <tbody>
+          {% for q in quotes %}
+            <tr><td><a href="{{ url_for('quotes_detail', quote_id=q.id) }}"><strong>{{ q.number }}</strong></a></td><td>{{ q.status }}</td><td>{{ q.created_at|display_date }}</td></tr>
+          {% else %}<tr><td colspan="3" class="muted">尚未有報價。</td></tr>{% endfor %}
+          </tbody>
+        </table></div>
       </div>
     </div>
   </div>

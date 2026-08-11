@@ -9,6 +9,7 @@
 </div>
 
 <form method="post" id="quote-form" class="quote-page">
+  <input type="hidden" name="document_type" value="quote">
   <section class="quote-top-grid">
     <div class="card quote-customer-card">
       <h2>客戶資料</h2>
@@ -52,10 +53,16 @@
         <label><input type="radio" name="mode" value="project" {% if draft and draft.mode == 'project' %}checked{% endif %}> 專案模式</label>
       </div>
 
-      <div id="project-name-wrap" class="field" {% if not draft or draft.mode != 'project' %}hidden{% endif %}>
+      <div id="project-name-wrap" class="field project-search-wrap" {% if not draft or draft.mode != 'project' %}hidden{% endif %}>
         <label>專案名稱 *</label>
-        <input type="hidden" name="project_id" value="{{ draft.project_id if draft else '' }}">
-        <input name="project_name" id="project-name" value="{{ draft.project_name if draft else '' }}" placeholder="例如：2026 教師甄選">
+        <input type="hidden" name="project_id" id="project-id" value="{{ draft.project_id if draft else '' }}">
+        <input name="project_name" id="project-name" autocomplete="off"
+               value="{{ draft.project_name if draft else '' }}"
+               placeholder="輸入搜尋既有專案，或直接輸入新專案名稱">
+        <div id="project-results" class="search-results project-search-results"></div>
+        <div class="muted" id="project-link-hint" style="margin-top:5px">
+          {% if draft and draft.project_id %}已連結既有專案；重新輸入會解除連結並視為新專案。{% else %}選取搜尋結果會連結既有專案；未選取結果則建立新專案。{% endif %}
+        </div>
       </div>
     </div>
 
@@ -89,9 +96,26 @@
     <div id="work-units"></div>
   </section>
 
+
+  <section class="card tax-summary-card">
+    <div class="tax-controls">
+      <div>
+        <div class="muted">稅別</div>
+        <div class="quote-mode-row">
+          <label><input type="radio" name="tax_mode" value="none" {% if not draft or draft.tax_mode != 'tax' %}checked{% endif %}> 不計稅</label>
+          <label><input type="radio" name="tax_mode" value="tax" {% if draft and draft.tax_mode == 'tax' %}checked{% endif %}> 計稅（5%）</label>
+        </div>
+      </div>
+    </div>
+    <div class="tax-totals">
+      <div><span>品項小計</span><strong id="items-subtotal">NT$ 0</strong></div>
+      <div><span>稅額</span><strong id="tax-amount">NT$ 0</strong></div>
+    </div>
+  </section>
+
   <section class="quote-footer card">
     <div>
-      <div class="muted">預估總預算</div>
+      <div class="muted">總計</div>
       <div class="quote-total" id="quote-total">NT$ 0</div>
     </div>
     <div class="quote-footer-actions">
@@ -166,6 +190,8 @@
   const itemTemplate = document.getElementById('item-template');
   const workUnitTemplate = document.getElementById('work-unit-template');
   const totalEl = document.getElementById('quote-total');
+  const itemsSubtotalEl = document.getElementById('items-subtotal');
+  const taxAmountEl = document.getElementById('tax-amount');
 
   const money = n => 'NT$ ' + Number(n || 0).toLocaleString('zh-TW', {maximumFractionDigits: 2});
 
@@ -175,15 +201,27 @@
   }
 
   function recalc() {
-    let total = 0;
-    document.querySelectorAll('.js-item-row').forEach(row => {
+    let subtotalTotal = 0;
+    const projectMode = document.querySelector('input[name="mode"]:checked')?.value === 'project';
+    const activeRoot = projectMode ? projectSection : normalSection;
+    activeRoot.querySelectorAll('.js-item-row').forEach(row => {
       const qty = Number(row.querySelector('.js-qty').value || 0);
       const price = Number(row.querySelector('.js-price').value || 0);
       const subtotal = qty * price;
       row.querySelector('.js-subtotal').textContent = money(subtotal);
-      total += subtotal;
+      subtotalTotal += subtotal;
     });
-    totalEl.textContent = money(total);
+    document.querySelectorAll('.js-item-row').forEach(row => {
+      if (activeRoot.contains(row)) return;
+      const qty = Number(row.querySelector('.js-qty').value || 0);
+      const price = Number(row.querySelector('.js-price').value || 0);
+      row.querySelector('.js-subtotal').textContent = money(qty * price);
+    });
+    const taxMode = document.querySelector('input[name="tax_mode"]:checked')?.value || 'none';
+    const tax = taxMode === 'tax' ? Math.round(subtotalTotal * 0.05) : 0;
+    itemsSubtotalEl.textContent = money(subtotalTotal);
+    taxAmountEl.textContent = money(tax);
+    totalEl.textContent = money(subtotalTotal + tax);
   }
 
   function setupProductSearch(row) {
@@ -385,6 +423,44 @@
     });
   }
 
+  const projectInput = document.getElementById('project-name');
+  const projectIdInput = document.getElementById('project-id');
+  const projectResults = document.getElementById('project-results');
+  const projectHint = document.getElementById('project-link-hint');
+  let projectTimer;
+
+  projectInput.addEventListener('input', () => {
+    // Typing means the user has not confirmed an existing project yet.
+    projectIdInput.value = '';
+    projectHint.textContent = '尚未連結既有專案；若不選搜尋結果，儲存時會建立新專案。';
+    clearTimeout(projectTimer);
+    const q = projectInput.value.trim();
+    if (!q) {
+      projectResults.innerHTML = '';
+      projectResults.classList.remove('show');
+      return;
+    }
+    projectTimer = setTimeout(async () => {
+      const rows = await fetchJson(`/api/projects/search?q=${encodeURIComponent(q)}`);
+      const data = Array.isArray(rows) ? rows : [];
+      projectResults.innerHTML = data.map(p => `
+        <button type="button" class="search-result project-result"
+          data-id="${p.id}" data-name="${p.project_name}">
+          <strong>${p.project_name}</strong>
+          <span>請款客戶：${p.customer_name || '—'}｜${p.status || '—'}</span>
+        </button>`).join('') || '<div class="muted search-empty">沒有既有專案；保留目前文字即可建立新專案。</div>';
+      projectResults.classList.add('show');
+      projectResults.querySelectorAll('.project-result').forEach(btn => {
+        btn.onclick = () => {
+          projectIdInput.value = btn.dataset.id || '';
+          projectInput.value = btn.dataset.name || '';
+          projectHint.textContent = `已連結既有專案 #${btn.dataset.id}；資料關聯將使用 project_id。`;
+          projectResults.classList.remove('show');
+        };
+      });
+    }, 150);
+  });
+
   setupCustomerSearch(
     document.getElementById('customer-name'),
     document.getElementById('customer-results'),
@@ -395,6 +471,14 @@
       document.getElementById('customer-phone').value = c.phone || '';
     }
   );
+
+  // 稅別切換必須即時重算；使用表單層事件委派，新增/修改畫面皆共用。
+  document.getElementById('quote-form').addEventListener('change', (e) => {
+    if (e.target && e.target.name === 'tax_mode') recalc();
+  });
+  document.getElementById('quote-form').addEventListener('click', (e) => {
+    if (e.target && e.target.name === 'tax_mode') recalc();
+  });
 
   document.querySelectorAll('input[name="mode"]').forEach(r => {
     r.addEventListener('change', () => {

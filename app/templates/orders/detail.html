@@ -7,6 +7,9 @@
   </div>
   <div class="top-actions">
     <a class="btn-secondary" href="{{ url_for('orders_list') }}">回訂單列表</a>
+    {% if order.status != '廢單' %}
+      <a class="btn-secondary" href="{{ url_for('orders_edit', order_id=order.id) }}">修改訂單</a>
+    {% endif %}
   </div>
 </div>
 
@@ -26,13 +29,14 @@
         <h2 style="margin:0">{{ wu.name }}</h2>
         <span class="badge">{{ wu.sort_order }}</span>
       </div>
+      {% if wu.note %}<div class="muted" style="margin-top:6px">{{ wu.note }}</div>{% endif %}
       <div style="margin-top:12px" class="table-wrap">
         <table>
           <thead><tr><th>品項</th><th>材質</th><th>尺寸</th><th>後加工</th><th>數量</th><th>單位</th><th>單價</th><th>小計</th></tr></thead>
           <tbody>
             {% for item in items if item.work_unit_id == wu.id %}
               <tr>
-                <td><strong>{{ item.product_name }}</strong></td>
+                <td><strong>{{ item.product_name }}</strong>{% if item.note %}<div class="muted small">{{ item.note }}</div>{% endif %}</td>
                 <td>{{ item.material or '—' }}</td>
                 <td>{{ item.size or '—' }}</td>
                 <td>{{ item.finishing or '—' }}</td>
@@ -55,7 +59,7 @@
         <tbody>
           {% for item in items %}
             <tr>
-              <td><strong>{{ item.product_name }}</strong></td>
+              <td><strong>{{ item.product_name }}</strong>{% if item.note %}<div class="muted small">{{ item.note }}</div>{% endif %}</td>
               <td>{{ item.material or '—' }}</td>
               <td>{{ item.size or '—' }}</td>
               <td>{{ item.finishing or '—' }}</td>
@@ -71,23 +75,76 @@
   </div>
 {% endif %}
 
-<div class="summary">
-  <div><div class="muted">總額</div><strong>NT$ {{ total|money }}</strong></div>
-  <div class="muted">訂單與報價資料分離保存，歷史紀錄可持續搜尋。</div>
+<div class="summary transaction-total-summary">
+  <div class="total-breakdown">
+    <div><span class="muted">品項小計</span><strong>NT$ {{ subtotal|money }}</strong></div>
+    <div><span class="muted">稅別</span><strong>{{ '計稅 5%' if order.tax_mode == 'tax' else '不計稅' }}</strong></div>
+    <div><span class="muted">稅額</span><strong>NT$ {{ tax_amount|money }}</strong></div>
+    <div class="grand-total"><span>總計</span><strong>NT$ {{ total|money }}</strong></div>
+  </div>
+  <div class="settlement-summary">
+    <div><span class="muted">沖帳狀態</span><strong>{{ payment_status }}</strong></div>
+    <div><span class="muted">已收</span><strong>NT$ {{ paid_total|money }}</strong></div>
+    <div><span class="muted">未收</span><strong>NT$ {{ balance|money }}</strong></div>
+  </div>
 </div>
 
-    <div class="card" style="margin-top:16px">
-      <div class="page-head" style="margin-bottom:10px">
-        <div><h2 style="margin:0">狀態更新</h2></div>
-      </div>
-      <form method="post" action="{{ url_for('orders_status', order_id=order.id) }}" class="row">
-        <select name="status">
-          {% for s in order_statuses %}
-            <option value="{{ s }}" {% if order.status == s %}selected{% endif %}>{{ s }}</option>
-          {% endfor %}
-        </select>
-        <button class="btn" type="submit">更新狀態</button>
-      </form>
-    </div>
+{% if order.note %}
+<div class="card" style="margin-top:16px">
+  <div class="muted">訂單備註</div>
+  <div style="white-space:pre-wrap">{{ order.note }}</div>
+</div>
+{% endif %}
 
+{% if order.status == '廢單' %}
+<div class="card danger-card" style="margin-top:16px">
+  <h2 style="margin-top:0">此訂單已廢單</h2>
+  <div class="muted">廢單原因</div>
+  <div style="white-space:pre-wrap">{{ order.void_reason or '—' }}</div>
+</div>
+{% else %}
+<div class="order-control-grid">
+  <div class="card">
+    <h2 style="margin-top:0">1. 訂單進度</h2>
+    <p class="muted">設計完成、進入印製、待取貨或交貨完成後，可在此更新目前進度。</p>
+    <form method="post" action="{{ url_for('orders_status', order_id=order.id) }}" class="row">
+      <select name="status">
+        {% for s in order_statuses if s != '廢單' %}
+          <option value="{{ s }}" {% if order.status == s %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn" type="submit">更新進度</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">2. 客戶沖帳</h2>
+    <p class="muted">可分次沖帳；每次會保留金額與時間紀錄。</p>
+    <form method="post" action="{{ url_for('orders_payment', order_id=order.id) }}">
+      <div class="grid cols-2">
+        <div class="field"><label>本次收款</label><input type="number" min="0.01" step="0.01" name="amount" required></div>
+        <div class="field"><label>備註</label><input name="note" placeholder="現金／匯款／其他"></div>
+      </div>
+      <button class="btn" type="submit">新增沖帳</button>
+    </form>
+    {% if payments %}
+      <div class="payment-list">
+        {% for p in payments %}
+          <div><span>{{ p.paid_at|display_date }}{% if p.note %}｜{{ p.note }}{% endif %}</span><strong>NT$ {{ p.amount|money }}</strong></div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">3. 廢單</h2>
+    <p class="muted">終止進行但保留歷史資料。廢單不等於刪除訂單。</p>
+    <form method="post" action="{{ url_for('orders_void', order_id=order.id) }}"
+          onsubmit="return confirm('確定將此訂單標記為廢單？歷史資料會保留。');">
+      <div class="field"><label>廢單原因 *</label><input name="reason" required placeholder="例如：客戶取消製作"></div>
+      <button class="btn-danger-soft" type="submit">設為廢單</button>
+    </form>
+  </div>
+</div>
+{% endif %}
 {% endblock %}
