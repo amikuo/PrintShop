@@ -209,6 +209,105 @@ def index():
     )
 
 
+@app.get("/api/dashboard/order-search")
+def api_dashboard_order_search():
+    """
+    Homepage smart order search.
+    Returns one result per order, even when several items match.
+    Search spans order number, customer, project, work unit, product and specs.
+    """
+    q = request.args.get("q", "").strip()
+    if not q:
+        return jsonify([])
+
+    tokens = [x for x in q.replace("　", " ").split() if x]
+    if not tokens:
+        return jsonify([])
+
+    conn = db()
+    clauses = []
+    params = []
+    for token in tokens:
+        like = f"%{token}%"
+        clauses.append("""(
+            o.order_number LIKE ? OR
+            c.name LIKE ? OR
+            COALESCE(p.project_name,'') LIKE ? OR
+            COALESCE(ow.name,'') LIKE ? OR
+            oi.product_name LIKE ? OR
+            COALESCE(oi.material,'') LIKE ? OR
+            COALESCE(oi.size,'') LIKE ? OR
+            COALESCE(oi.finishing,'') LIKE ? OR
+            CAST(COALESCE(oi.quantity,'') AS TEXT) LIKE ?
+        )""")
+        params.extend([like] * 9)
+
+    rows = conn.execute(
+        f"""
+        SELECT
+            o.id AS order_id,
+            o.order_number,
+            o.status,
+            o.created_at,
+            o.delivery_date,
+            c.name AS customer_name,
+            COALESCE(p.project_name,'') AS project_name,
+            COUNT(DISTINCT oi.id) AS matched_item_count,
+            GROUP_CONCAT(DISTINCT oi.product_name) AS matched_products
+        FROM orders o
+        JOIN customers c ON c.id=o.customer_id
+        LEFT JOIN projects p ON p.id=o.project_id
+        LEFT JOIN order_items oi ON oi.order_id=o.id
+        LEFT JOIN order_work_units ow ON ow.id=oi.work_unit_id
+        WHERE o.status != '廢單'
+          AND {' AND '.join(clauses)}
+        GROUP BY o.id
+        ORDER BY
+            CASE WHEN o.order_number = ? THEN 0 ELSE 1 END,
+            CASE WHEN c.name = ? THEN 0 ELSE 1 END,
+            o.id DESC
+        LIMIT 30
+        """,
+        params + [q, q],
+    ).fetchall()
+
+    result = []
+    for row in rows:
+        d = dict(row)
+        # Fetch a few matching item lines for readable preview.
+        item_clauses = []
+        item_params = [row["order_id"]]
+        for token in tokens:
+            like = f"%{token}%"
+            item_clauses.append("""(
+                oi.product_name LIKE ? OR COALESCE(oi.material,'') LIKE ? OR
+                COALESCE(oi.size,'') LIKE ? OR COALESCE(oi.finishing,'') LIKE ? OR
+                COALESCE(ow.name,'') LIKE ? OR CAST(COALESCE(oi.quantity,'') AS TEXT) LIKE ?
+            )""")
+            item_params.extend([like] * 6)
+        item_where = " AND ".join(item_clauses)
+        items = conn.execute(
+            f"""
+            SELECT oi.product_name, COALESCE(oi.material,'') AS material,
+                   COALESCE(oi.size,'') AS size, COALESCE(oi.finishing,'') AS finishing,
+                   oi.quantity, COALESCE(oi.unit,'') AS unit, oi.unit_price,
+                   COALESCE(ow.name,'') AS work_unit_name
+            FROM order_items oi
+            LEFT JOIN order_work_units ow ON ow.id=oi.work_unit_id
+            WHERE oi.order_id=?
+              AND ({item_where})
+            ORDER BY oi.id DESC
+            LIMIT 3
+            """,
+            item_params,
+        ).fetchall() if item_clauses else []
+        d["items"] = [dict(x) for x in items]
+        result.append(d)
+
+    conn.close()
+    return jsonify(result)
+
+
 # ---------------- Customers ----------------
 
 @app.route("/customers")
@@ -627,12 +726,83 @@ def api_projects_search():
     return jsonify(rows)
 
 
+
+def refresh_project_status(conn, project_id):
+    """Project is complete only when every non-void order is complete and fully settled."""
+    if not project_id:
+        return "進行中"
+
+    orders = conn.execute(
+        "SELECT id,status,tax_mode,tax_rate FROM orders WHERE project_id=? AND status!='廢單' ORDER BY id",
+        (int(project_id),),
+    ).fetchall()
+
+    if not orders:
+        new_status = "進行中"
+    else:
+        all_complete = True
+        for order in orders:
+            if order["status"] != "完結":
+                all_complete = False
+                break
+
+            items = conn.execute(
+                "SELECT subtotal FROM order_items WHERE order_id=?",
+                (order["id"],),
+            ).fetchall()
+            subtotal = sum(float(x["subtotal"] or 0) for x in items)
+            tax = int(subtotal * 0.05 + 0.5) if order["tax_mode"] == "tax" else 0
+            total = subtotal + tax
+            paid = conn.execute(
+                "SELECT COALESCE(SUM(amount),0) AS s FROM order_payments WHERE order_id=?",
+                (order["id"],),
+            ).fetchone()["s"] or 0
+
+            if float(paid) + 0.000001 < float(total):
+                all_complete = False
+                break
+
+        new_status = "已完成" if all_complete else "進行中"
+
+    conn.execute(
+        "UPDATE projects SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        (new_status, int(project_id)),
+    )
+    return new_status
+
+
+def project_return_url(project_id):
+    return url_for("projects_detail", project_id=int(project_id)) if project_id else None
+
+
+def sync_project_status(conn, project_id: int) -> str:
+    project = conn.execute("SELECT id,status FROM projects WHERE id=?", (project_id,)).fetchone()
+    if not project:
+        return ""
+    orders = conn.execute("SELECT status FROM orders WHERE project_id=?", (project_id,)).fetchall()
+    quotes = conn.execute("SELECT status,converted_order_id FROM quotes WHERE project_id=?", (project_id,)).fetchall()
+    active_orders = [r for r in orders if r["status"] != "廢單"]
+    active_quotes = [r for r in quotes if r["status"] not in ("已取消","取消","廢單") and not r["converted_order_id"]]
+    if (orders or quotes) and not active_orders and not active_quotes:
+        status="已取消"
+    elif active_orders and all(r["status"]=="完結" for r in active_orders) and not active_quotes:
+        status="已完成"
+    else:
+        status="進行中"
+    if project["status"] != status:
+        conn.execute("UPDATE projects SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(status,project_id))
+    return status
+
+
 # ---------------- Projects ----------------
 
 @app.route("/projects")
 def projects_list():
     q = request.args.get("q", "").strip()
     conn = db()
+    for _p in conn.execute("SELECT id FROM projects").fetchall():
+        sync_project_status(conn, int(_p["id"]))
+    conn.commit()
     sql = """
         SELECT p.*, c.name AS customer_name,
                (SELECT COUNT(*) FROM quotes q WHERE q.project_id = p.id) AS quote_count,
@@ -686,6 +856,11 @@ def projects_new():
 @app.route("/projects/<int:project_id>")
 def projects_detail(project_id):
     conn = db()
+
+    # Status is derived from current order progress + settlement.
+    refresh_project_status(conn, project_id)
+    conn.commit()
+
     project = conn.execute(
         """
         SELECT p.*, c.name AS customer_name
@@ -699,6 +874,14 @@ def projects_detail(project_id):
         conn.close()
         abort(404)
 
+    sync_project_status(conn, project_id)
+    conn.commit()
+    project = conn.execute("""
+        SELECT p.*, c.name AS customer_name
+        FROM projects p JOIN customers c ON c.id=p.customer_id
+        WHERE p.id=?
+    """, (project_id,)).fetchone()
+
     quotes = conn.execute(
         """
         SELECT q.*, q.quote_number AS number
@@ -708,6 +891,7 @@ def projects_detail(project_id):
         """,
         (project_id,),
     ).fetchall()
+
     orders = conn.execute(
         """
         SELECT o.*, o.order_number AS number, c.name AS customer_name
@@ -718,6 +902,37 @@ def projects_detail(project_id):
         """,
         (project_id,),
     ).fetchall()
+
+    order_summaries = []
+    project_total = 0.0
+    project_paid = 0.0
+    for order in orders:
+        items = conn.execute(
+            "SELECT * FROM order_items WHERE order_id=? ORDER BY sort_order,id",
+            (order["id"],),
+        ).fetchall()
+        subtotal, tax_amount, total = calculate_totals(items, order["tax_mode"], order["tax_rate"])
+        paid_total = float(conn.execute(
+            "SELECT COALESCE(SUM(amount),0) AS s FROM order_payments WHERE order_id=?",
+            (order["id"],),
+        ).fetchone()["s"] or 0)
+        balance = max(float(total) - paid_total, 0)
+        payment_status = "已結清" if float(total) > 0 and balance <= 0 else ("部分收款" if paid_total > 0 else "未收款")
+        order_summaries.append({
+            "id": order["id"],
+            "order_number": order["order_number"],
+            "status": order["status"],
+            "delivery_date": order["delivery_date"],
+            "total": float(total),
+            "paid_total": paid_total,
+            "balance": balance,
+            "payment_status": payment_status,
+        })
+        if order["status"] != "廢單":
+            project_total += float(total)
+            project_paid += paid_total
+
+    project_balance = max(project_total - project_paid, 0)
 
     # Current project overview: combine all work units from every order under this project_id.
     project_units = []
@@ -751,7 +966,6 @@ def projects_detail(project_id):
                 "items": [dict(x) for x in unit_items],
             })
 
-        # Defensive support for project-mode orders that somehow contain ungrouped items.
         loose_items = conn.execute(
             """
             SELECT oi.*, ? AS order_number, ? AS order_id
@@ -772,7 +986,6 @@ def projects_detail(project_id):
                 "items": [dict(x) for x in loose_items],
             })
 
-    # Before a project has any order, show its unconverted quote work as provisional content.
     provisional_units = []
     if not orders:
         for quote in quotes:
@@ -802,12 +1015,56 @@ def projects_detail(project_id):
         project=project,
         quotes=quotes,
         orders=orders,
+        order_summaries=order_summaries,
+        project_total=project_total,
+        project_paid=project_paid,
+        project_balance=project_balance,
         project_units=project_units,
         provisional_units=provisional_units,
         customers=[],
     )
 
 
+
+
+@app.post("/projects/<int:project_id>/progress")
+def projects_progress(project_id):
+    action=request.form.get("action","").strip()
+    conn=db()
+    if not conn.execute("SELECT id FROM projects WHERE id=?",(project_id,)).fetchone():
+        conn.close(); abort(404)
+    if action=="complete":
+        conn.execute("UPDATE orders SET status='完結',updated_at=CURRENT_TIMESTAMP WHERE project_id=? AND status!='廢單'",(project_id,))
+        conn.execute("UPDATE projects SET status='已完成',updated_at=CURRENT_TIMESTAMP WHERE id=?",(project_id,))
+        flash("專案進度已標記完成；收款狀態未變更。")
+    elif action=="cancel":
+        conn.execute("UPDATE orders SET status='廢單',updated_at=CURRENT_TIMESTAMP WHERE project_id=? AND status!='廢單'",(project_id,))
+        conn.execute("UPDATE quotes SET status='已取消',updated_at=CURRENT_TIMESTAMP WHERE project_id=? AND converted_order_id IS NULL",(project_id,))
+        conn.execute("UPDATE projects SET status='已取消',updated_at=CURRENT_TIMESTAMP WHERE id=?",(project_id,))
+        flash("專案進度已取消；收款紀錄未變更。")
+    else:
+        conn.close(); flash("不支援的專案進度操作。")
+        return redirect(url_for("projects_detail",project_id=project_id))
+    conn.commit(); conn.close()
+    return redirect(url_for("projects_detail",project_id=project_id))
+
+
+@app.post("/projects/<int:project_id>/payment")
+def projects_payment(project_id):
+    conn=db()
+    if not conn.execute("SELECT id FROM projects WHERE id=?",(project_id,)).fetchone():
+        conn.close(); abort(404)
+    cols={r["name"] for r in conn.execute("PRAGMA table_info(orders)").fetchall()}
+    if "payment_status" in cols:
+        conn.execute("UPDATE orders SET payment_status='已收款',updated_at=CURRENT_TIMESTAMP WHERE project_id=? AND status!='廢單'",(project_id,))
+    elif "paid_amount" in cols and "grand_total" in cols:
+        conn.execute("UPDATE orders SET paid_amount=grand_total,updated_at=CURRENT_TIMESTAMP WHERE project_id=? AND status!='廢單'",(project_id,))
+    else:
+        conn.close(); flash("目前資料庫尚無可用的訂單收款欄位，未變更任何資料。")
+        return redirect(url_for("projects_detail",project_id=project_id))
+    conn.commit(); conn.close()
+    flash("專案內有效訂單已批次沖帳；訂單進度未變更。")
+    return redirect(url_for("projects_detail",project_id=project_id))
 
 
 # ---------------- Quotes ----------------
@@ -997,6 +1254,9 @@ def quotes_convert(quote_id):
         abort(404)
     try:
         order_id = convert_quote_to_order(conn, quote_id)
+        converted = conn.execute("SELECT project_id FROM orders WHERE id=?", (order_id,)).fetchone()
+        if converted and converted["project_id"]:
+            refresh_project_status(conn, converted["project_id"])
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -1047,6 +1307,9 @@ def orders_new():
             return redirect(url_for("orders_new"))
         try:
             order_id = create_order_from_payload(conn, payload, source_quote_id=None)
+            created_order = conn.execute("SELECT project_id FROM orders WHERE id=?", (order_id,)).fetchone()
+            if created_order and created_order["project_id"]:
+                refresh_project_status(conn, created_order["project_id"])
             conn.commit()
         except Exception as e:
             conn.rollback(); conn.close()
@@ -1061,6 +1324,7 @@ def orders_new():
 
 @app.route("/orders/<int:order_id>/edit", methods=["GET", "POST"])
 def orders_edit(order_id):
+    from_project = request.values.get("from_project", "").strip()
     conn = db()
     order = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
     if not order:
@@ -1078,22 +1342,29 @@ def orders_edit(order_id):
             return redirect(url_for("orders_edit", order_id=order_id))
         try:
             update_order_from_payload(conn, order_id, payload)
+            updated_order = conn.execute("SELECT project_id FROM orders WHERE id=?", (order_id,)).fetchone()
+            if updated_order and updated_order["project_id"]:
+                refresh_project_status(conn, updated_order["project_id"])
             conn.commit()
         except Exception as e:
             conn.rollback(); conn.close()
             flash(f"修改訂單失敗：{e}")
             return redirect(url_for("orders_edit", order_id=order_id))
+        project_id = order["project_id"]
         conn.close()
         flash("訂單已更新。")
+        if from_project and project_id and str(project_id) == str(from_project):
+            return redirect(url_for("projects_detail", project_id=project_id))
         return redirect(url_for("orders_detail", order_id=order_id))
 
     draft = order_to_payload(conn, order_id)
     conn.close()
-    return render_template("orders/form.html", draft=draft, edit_order_id=order_id)
+    return render_template("orders/form.html", draft=draft, edit_order_id=order_id, from_project=from_project)
 
 
 @app.route("/orders/<int:order_id>")
 def orders_detail(order_id):
+    from_project = request.args.get("from_project", "").strip()
     conn = db()
     order = conn.execute(
         """
@@ -1121,19 +1392,28 @@ def orders_detail(order_id):
         "orders/detail.html", order=order, items=items, work_units=work_units,
         subtotal=subtotal, tax_amount=tax_amount, total=total,
         payments=payments, paid_total=paid_total, balance=balance, payment_status=payment_status,
+        from_project=from_project,
     )
 
 
 @app.post("/orders/<int:order_id>/status")
 def orders_status(order_id):
     status = request.form.get("status", "").strip()
+    return_project = request.form.get("return_project", "").strip()
     if status not in ORDER_STATUSES or status == "廢單":
         flash("不支援的訂單狀態。")
-        return redirect(url_for("orders_detail", order_id=order_id))
+        return redirect(url_for("projects_detail", project_id=return_project)) if return_project else redirect(url_for("orders_detail", order_id=order_id))
     conn = db()
+    order = conn.execute("SELECT id,project_id FROM orders WHERE id=?", (order_id,)).fetchone()
+    if not order:
+        conn.close(); abort(404)
     conn.execute("UPDATE orders SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (status,order_id))
+    if order["project_id"]:
+        refresh_project_status(conn, order["project_id"])
     conn.commit(); conn.close()
     flash("訂單狀態已更新。")
+    if return_project:
+        return redirect(url_for("projects_detail", project_id=return_project))
     return redirect(url_for("orders_detail", order_id=order_id))
 
 
@@ -1141,24 +1421,29 @@ def orders_status(order_id):
 def orders_payment(order_id):
     amount_text = request.form.get("amount","").strip()
     note = request.form.get("note","").strip()
+    return_project = request.form.get("return_project", "").strip()
     try:
         amount = float(amount_text)
         if amount <= 0:
             raise ValueError
     except ValueError:
         flash("沖帳金額必須大於 0。")
-        return redirect(url_for("orders_detail", order_id=order_id))
+        return redirect(url_for("projects_detail", project_id=return_project)) if return_project else redirect(url_for("orders_detail", order_id=order_id))
     conn = db()
-    order = conn.execute("SELECT id,status FROM orders WHERE id=?", (order_id,)).fetchone()
+    order = conn.execute("SELECT id,status,project_id FROM orders WHERE id=?", (order_id,)).fetchone()
     if not order:
         conn.close(); abort(404)
     if order["status"] == "廢單":
         conn.close()
         flash("廢單不可沖帳。")
-        return redirect(url_for("orders_detail", order_id=order_id))
+        return redirect(url_for("projects_detail", project_id=return_project)) if return_project else redirect(url_for("orders_detail", order_id=order_id))
     conn.execute("INSERT INTO order_payments(order_id,amount,note) VALUES(?,?,?)", (order_id,amount,note))
+    if order["project_id"]:
+        refresh_project_status(conn, order["project_id"])
     conn.commit(); conn.close()
     flash("沖帳紀錄已新增。")
+    if return_project:
+        return redirect(url_for("projects_detail", project_id=return_project))
     return redirect(url_for("orders_detail", order_id=order_id))
 
 
@@ -1169,25 +1454,220 @@ def orders_void(order_id):
         flash("廢單請填寫原因。")
         return redirect(url_for("orders_detail", order_id=order_id))
     conn = db()
-    order = conn.execute("SELECT id,status FROM orders WHERE id=?", (order_id,)).fetchone()
+    order = conn.execute("SELECT id,status,project_id FROM orders WHERE id=?", (order_id,)).fetchone()
     if not order:
         conn.close(); abort(404)
     conn.execute(
         "UPDATE orders SET status='廢單',void_reason=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
         (reason,order_id),
     )
+    if order["project_id"]:
+        refresh_project_status(conn, order["project_id"])
     conn.commit(); conn.close()
     flash("訂單已標記為廢單，歷史資料仍保留。")
     return redirect(url_for("orders_detail", order_id=order_id))
 
 
-@app.route("/api/orders/smart-search")
+@app.get("/api/orders/smart-search")
 def api_orders_smart_search():
+    """
+    V2.8.1 Smart search:
+    broad recall + relevance ranking.
+    Priority: product > specification > customer/work-unit > recency.
+    Customer/spec fields are ranking signals, not hard filters.
+    """
+    customer = request.args.get("customer", "").strip()
+    product = request.args.get("product", "").strip()
+    material = request.args.get("material", "").strip()
+    size = request.args.get("size", "").strip()
+    finishing = request.args.get("finishing", "").strip()
+    quantity = request.args.get("quantity", "").strip()
+    work_unit = request.args.get("work_unit", "").strip()
+    linked_customer_id = request.args.get("linked_customer_id", "").strip()
     q = request.args.get("q", "").strip()
+    exclude_order_id = request.args.get("exclude_order_id", "").strip()
+
+    if not any([customer, product, material, size, finishing, quantity, work_unit, linked_customer_id, q]):
+        return jsonify([])
+
     conn = db()
-    rows = search_order_items(conn, q, limit=20) if q else []
+    where = ["o.status != '廢單'"]
+    where_params = []
+
+    # The typed product is the primary recall condition.
+    # Once a product exists, keep all same/similar-product history regardless
+    # of customer/spec differences. Other fields only change ranking.
+    if product:
+        where.append("oi.product_name LIKE ?")
+        where_params.append(f"%{product}%")
+    elif q:
+        like = f"%{q}%"
+        where.append("""(
+            o.order_number LIKE ? OR c.name LIKE ? OR
+            COALESCE(p.project_name,'') LIKE ? OR COALESCE(ow.name,'') LIKE ? OR
+            oi.product_name LIKE ? OR COALESCE(oi.material,'') LIKE ? OR
+            COALESCE(oi.size,'') LIKE ? OR COALESCE(oi.finishing,'') LIKE ?
+        )""")
+        where_params.extend([like] * 8)
+    elif customer:
+        # Before a product is entered, customer history is useful as a preview.
+        where.append("c.name LIKE ?")
+        where_params.append(f"%{customer}%")
+    elif work_unit:
+        where.append("COALESCE(ow.name,'') LIKE ?")
+        where_params.append(f"%{work_unit}%")
+
+    if exclude_order_id:
+        try:
+            where.append("o.id != ?")
+            where_params.append(int(exclude_order_id))
+        except ValueError:
+            pass
+
+    score_parts = []
+    score_params = []
+
+    # 1) Product — dominant weight.
+    if product:
+        score_parts += [
+            "CASE WHEN oi.product_name = ? THEN 10000 ELSE 0 END",
+            "CASE WHEN oi.product_name LIKE ? THEN 5000 ELSE 0 END",
+        ]
+        score_params += [product, f"%{product}%"]
+
+    # 2) Specification — material / size / finishing / quantity.
+    if material:
+        score_parts += [
+            "CASE WHEN COALESCE(oi.material,'') = ? THEN 1200 ELSE 0 END",
+            "CASE WHEN COALESCE(oi.material,'') LIKE ? THEN 500 ELSE 0 END",
+        ]
+        score_params += [material, f"%{material}%"]
+    if size:
+        score_parts += [
+            "CASE WHEN COALESCE(oi.size,'') = ? THEN 1200 ELSE 0 END",
+            "CASE WHEN COALESCE(oi.size,'') LIKE ? THEN 500 ELSE 0 END",
+        ]
+        score_params += [size, f"%{size}%"]
+    if finishing:
+        score_parts += [
+            "CASE WHEN COALESCE(oi.finishing,'') = ? THEN 800 ELSE 0 END",
+            "CASE WHEN COALESCE(oi.finishing,'') LIKE ? THEN 350 ELSE 0 END",
+        ]
+        score_params += [finishing, f"%{finishing}%"]
+    if quantity:
+        try:
+            qn=float(quantity)
+            score_parts += [
+                "CASE WHEN ABS(COALESCE(oi.quantity,0)-?) < 0.000001 THEN 900 ELSE 0 END",
+                """CASE
+                    WHEN ? > 0 AND COALESCE(oi.quantity,0) > 0
+                     AND ABS(COALESCE(oi.quantity,0)-?) / ? <= 0.25
+                    THEN 300 ELSE 0 END"""
+            ]
+            score_params += [qn, qn, qn, qn]
+        except ValueError:
+            pass
+
+    # 3) Customer / project work-unit — useful, but never stronger than specs.
+    if linked_customer_id:
+        try:
+            cid=int(linked_customer_id)
+            score_parts.append("CASE WHEN ow.linked_customer_id = ? THEN 450 ELSE 0 END")
+            score_params.append(cid)
+        except ValueError:
+            pass
+    if work_unit:
+        score_parts += [
+            "CASE WHEN COALESCE(ow.name,'') = ? THEN 400 ELSE 0 END",
+            "CASE WHEN COALESCE(ow.name,'') LIKE ? THEN 180 ELSE 0 END",
+        ]
+        score_params += [work_unit, f"%{work_unit}%"]
+    if customer:
+        score_parts += [
+            "CASE WHEN c.name = ? THEN 350 ELSE 0 END",
+            "CASE WHEN c.name LIKE ? THEN 150 ELSE 0 END",
+        ]
+        score_params += [customer, f"%{customer}%"]
+
+    # Free-text search is an additional ranking signal when product already drives recall.
+    if q and product:
+        like=f"%{q}%"
+        score_parts.append("""CASE WHEN (
+            o.order_number LIKE ? OR c.name LIKE ? OR
+            COALESCE(p.project_name,'') LIKE ? OR COALESCE(ow.name,'') LIKE ? OR
+            COALESCE(oi.material,'') LIKE ? OR COALESCE(oi.size,'') LIKE ? OR
+            COALESCE(oi.finishing,'') LIKE ?
+        ) THEN 120 ELSE 0 END""")
+        score_params.extend([like] * 7)
+
+    score_sql = " + ".join(score_parts) if score_parts else "0"
+
+    sql=f"""
+        SELECT
+            oi.id AS item_id, oi.order_id, oi.product_name,
+            COALESCE(oi.material,'') AS material,
+            COALESCE(oi.size,'') AS size,
+            COALESCE(oi.finishing,'') AS finishing,
+            oi.quantity, COALESCE(oi.unit,'') AS unit,
+            oi.unit_price, oi.subtotal, COALESCE(oi.note,'') AS note,
+            o.order_number, o.status AS order_status, o.created_at, o.delivery_date,
+            c.name AS customer_name,
+            COALESCE(p.project_name,'') AS project_name,
+            COALESCE(ow.name,'') AS work_unit_name,
+            ow.linked_customer_id AS work_unit_customer_id,
+            ({score_sql}) AS relevance_score
+        FROM order_items oi
+        JOIN orders o ON o.id=oi.order_id
+        JOIN customers c ON c.id=o.customer_id
+        LEFT JOIN projects p ON p.id=o.project_id
+        LEFT JOIN order_work_units ow ON ow.id=oi.work_unit_id
+        WHERE {' AND '.join(where)}
+        ORDER BY relevance_score DESC, o.id DESC, oi.id DESC
+        LIMIT 40
+    """
+    rows=conn.execute(sql, score_params + where_params).fetchall()
     conn.close()
-    return jsonify(rows)
+    return jsonify([dict(x) for x in rows])
+
+
+@app.get("/api/orders/<int:order_id>/history-detail")
+def api_order_history_detail(order_id):
+    conn=db()
+    order=conn.execute(
+        """
+        SELECT o.*, c.name AS customer_name, c.contact_person, c.tax_id, c.phone,
+               COALESCE(p.project_name,'') AS project_name
+        FROM orders o
+        JOIN customers c ON c.id=o.customer_id
+        LEFT JOIN projects p ON p.id=o.project_id
+        WHERE o.id=?
+        """,
+        (order_id,),
+    ).fetchone()
+    if not order:
+        conn.close()
+        return jsonify({"ok":False}),404
+
+    items=conn.execute(
+        """
+        SELECT oi.*, COALESCE(ow.name,'') AS work_unit_name
+        FROM order_items oi
+        LEFT JOIN order_work_units ow ON ow.id=oi.work_unit_id
+        WHERE oi.order_id=?
+        ORDER BY COALESCE(ow.sort_order,0),oi.sort_order,oi.id
+        """,
+        (order_id,),
+    ).fetchall()
+    subtotal,tax_amount,total=calculate_totals(items,order["tax_mode"],order["tax_rate"])
+    conn.close()
+    return jsonify({
+        "ok":True,
+        "order":dict(order),
+        "items":[dict(x) for x in items],
+        "subtotal":subtotal,
+        "tax_amount":tax_amount,
+        "total":total,
+    })
 
 
 # ---------------- Export / backup basics ----------------

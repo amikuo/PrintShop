@@ -32,6 +32,23 @@
 
 <div style="height:18px"></div>
 
+
+<section class="card dashboard-smart-search">
+  <div class="dashboard-smart-head">
+    <div>
+      <h2>智慧訂單搜尋</h2>
+      <p class="muted">可搜尋訂單號、客戶、專案、工作單位、品項、材質、尺寸、後加工與數量。</p>
+    </div>
+    <span class="smart-result-count" id="dashboard-smart-count">0</span>
+  </div>
+  <div class="dashboard-smart-input-wrap">
+    <input id="dashboard-smart-input" autocomplete="off" placeholder="搜尋訂單、客戶、專案、工作單位、品項、規格…">
+  </div>
+  <div id="dashboard-smart-results" class="dashboard-smart-results"></div>
+</section>
+
+<div style="height:18px"></div>
+
 <section class="card dashboard-recent">
   <div class="page-head" style="margin-bottom:10px">
     <div>
@@ -81,4 +98,65 @@
     </table>
   </div>
 </section>
+
+<script>
+(() => {
+  const input=document.getElementById('dashboard-smart-input');
+  const box=document.getElementById('dashboard-smart-results');
+  const count=document.getElementById('dashboard-smart-count');
+  if(!input || !box) return;
+  let timer=null, requestNo=0;
+
+  const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const money=v=>'NT$ '+Number(v||0).toLocaleString('zh-TW',{maximumFractionDigits:0});
+
+  async function run(){
+    const q=input.value.trim();
+    if(!q){ box.innerHTML=''; count.textContent='0'; return; }
+    const n=++requestNo;
+    box.innerHTML='<div class="muted dashboard-smart-loading">搜尋中…</div>';
+    const res=await fetch(`/api/dashboard/order-search?q=${encodeURIComponent(q)}`);
+    const rows=await res.json();
+    if(n!==requestNo) return;
+    count.textContent=String(rows.length||0);
+    if(!rows.length){
+      box.innerHTML='<div class="muted-box">找不到符合的訂單。</div>';
+      return;
+    }
+    box.innerHTML=rows.map(o=>{
+      const items=(o.items||[]).map(i=>`
+        <div class="dashboard-smart-item">
+          <span>${esc(i.work_unit_name?i.work_unit_name+'｜':'')}${esc(i.product_name)}</span>
+          <span class="muted">${[i.material,i.size,i.finishing,(i.quantity??'')+(i.unit||'')].filter(Boolean).map(esc).join('｜')}</span>
+          <strong>${money(i.unit_price)}</strong>
+        </div>`).join('');
+      return `<article class="dashboard-smart-order">
+        <div class="dashboard-smart-order-head">
+          <div>
+            <strong>${esc(o.order_number)}</strong>
+            <span>${esc(o.customer_name)}</span>
+            ${o.project_name?`<span class="muted">｜${esc(o.project_name)}</span>`:''}
+          </div>
+          <span class="status-inline"><span>${esc(o.status)}</span><span class="status-dot status-${esc(o.status)}"></span></span>
+        </div>
+        <div class="dashboard-smart-meta muted">
+          建立 ${esc(String(o.created_at||'').slice(0,10))}
+          ${o.delivery_date?`｜交貨 ${esc(o.delivery_date)}`:''}
+          ｜符合 ${Number(o.matched_item_count||0)} 個品項
+        </div>
+        <div class="dashboard-smart-items">${items}</div>
+        <div class="dashboard-smart-actions">
+          <a class="btn-secondary" href="/orders/${o.order_id}">查看訂單</a>
+        </div>
+      </article>`;
+    }).join('');
+  }
+
+  input.addEventListener('input',()=>{
+    clearTimeout(timer);
+    timer=setTimeout(run,180);
+  });
+})();
+</script>
+
 {% endblock %}

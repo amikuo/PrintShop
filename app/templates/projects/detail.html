@@ -39,6 +39,76 @@
     <div style="margin-top:12px"><div class="muted">備註</div><div>{{ project.note or '—' }}</div></div>
   </div>
 
+
+  {% if orders %}
+  <div class="project-finance-grid" style="margin-top:16px">
+    <div class="card"><div class="muted">專案總額</div><strong>NT$ {{ project_total|money }}</strong></div>
+    <div class="card"><div class="muted">已收</div><strong>NT$ {{ project_paid|money }}</strong></div>
+    <div class="card"><div class="muted">未收</div><strong>NT$ {{ project_balance|money }}</strong></div>
+  </div>
+
+  <div class="card project-control-center" style="margin-top:16px">
+    <div class="page-head" style="margin-bottom:12px">
+      <div>
+        <h2 style="margin:0">專案訂單控制</h2>
+        <p class="muted" style="margin:5px 0 0">常用的進度更新與沖帳直接在專案頁完成；只有修改交易內容時才進完整訂單頁。</p>
+      </div>
+    </div>
+    <div class="project-order-controls">
+      {% for o in order_summaries %}
+      <section class="project-order-control {% if o.status == '廢單' %}is-void{% endif %}">
+        <div class="project-order-control-head">
+          <div>
+            <a href="{{ url_for('orders_detail', order_id=o.id, from_project=project.id) }}"><strong>{{ o.order_number }}</strong></a>
+            <span class="badge">{{ o.status }}</span>
+            <span class="muted">{{ o.payment_status }}</span>
+          </div>
+          <div class="project-order-actions">
+            <a class="btn-secondary compact-btn" href="{{ url_for('orders_detail', order_id=o.id, from_project=project.id) }}">查看</a>
+            {% if o.status != '廢單' %}
+              <a class="btn-secondary compact-btn" href="{{ url_for('orders_edit', order_id=o.id, from_project=project.id) }}">修改訂單</a>
+            {% endif %}
+          </div>
+        </div>
+
+        <div class="project-order-money">
+          <div><span class="muted">總額</span><strong>NT$ {{ o.total|money }}</strong></div>
+          <div><span class="muted">已收</span><strong>NT$ {{ o.paid_total|money }}</strong></div>
+          <div><span class="muted">未收</span><strong>NT$ {{ o.balance|money }}</strong></div>
+        </div>
+
+        {% if o.status != '廢單' %}
+        <div class="project-order-quick-actions">
+          <form method="post" action="{{ url_for('orders_status', order_id=o.id) }}" class="project-inline-form">
+            <input type="hidden" name="return_project" value="{{ project.id }}">
+            <label>進度</label>
+            <select name="status">
+              {% for s in order_statuses if s != '廢單' %}
+                <option value="{{ s }}" {% if o.status == s %}selected{% endif %}>{{ s }}</option>
+              {% endfor %}
+            </select>
+            <button class="btn-secondary compact-btn" type="submit">更新</button>
+          </form>
+
+          {% if o.balance > 0 %}
+          <form method="post" action="{{ url_for('orders_payment', order_id=o.id) }}" class="project-inline-form">
+            <input type="hidden" name="return_project" value="{{ project.id }}">
+            <label>沖帳</label>
+            <input type="number" min="0.01" step="0.01" max="{{ o.balance }}" name="amount" placeholder="金額" required>
+            <input name="note" placeholder="備註">
+            <button class="btn compact-btn" type="submit">收款</button>
+          </form>
+          {% else %}
+            <div class="settled-mark">✓ 已結清</div>
+          {% endif %}
+        </div>
+        {% endif %}
+      </section>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
   <div class="card project-overview-card" style="margin-top:16px">
     <div class="page-head" style="margin-bottom:12px">
       <div>
@@ -112,6 +182,25 @@
     {% else %}
       <div class="muted-box">目前尚未有可顯示的專案工作內容。</div>
     {% endif %}
+  </div>
+
+
+  <div class="card project-batch-card" style="margin-top:16px">
+    <div class="page-head" style="margin-bottom:12px"><div>
+      <h2 style="margin:0">專案批次管理</h2>
+      <p class="muted" style="margin:5px 0 0">進度與收款完全分開操作；其中一項不會連動另一項。</p>
+    </div></div>
+    <div class="project-batch-grid">
+      <section><h3>專案進度</h3><p class="muted">批次完成或取消有效交易；廢單不會重新啟用。</p>
+        <div class="inline-actions">
+          <form method="post" action="{{ url_for('projects_progress', project_id=project.id) }}" onsubmit="return confirm('確定將此專案內所有有效訂單標記為完結？收款狀態不會改變。')"><input type="hidden" name="action" value="complete"><button class="btn" type="submit">整案標記完成</button></form>
+          <form method="post" action="{{ url_for('projects_progress', project_id=project.id) }}" onsubmit="return confirm('確定取消整個專案？收款紀錄不變。')"><input type="hidden" name="action" value="cancel"><button class="btn-danger" type="submit">整案取消</button></form>
+        </div>
+      </section>
+      <section><h3>專案收款</h3><p class="muted">只處理有效訂單沖帳，不修改製作進度。</p>
+        <form method="post" action="{{ url_for('projects_payment', project_id=project.id) }}" onsubmit="return confirm('確定將此專案內有效訂單批次沖帳？訂單進度不會改變。')"><button class="btn-secondary" type="submit">整案沖帳</button></form>
+      </section>
+    </div>
   </div>
 
   <div class="card" style="margin-top:16px">

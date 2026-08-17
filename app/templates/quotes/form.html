@@ -10,7 +10,7 @@
 
 <form method="post" id="quote-form" class="quote-page">
   <input type="hidden" name="document_type" value="quote">
-  <section class="quote-top-grid">
+  <section class="quote-top-stack">
     <div class="card quote-customer-card">
       <h2>客戶資料</h2>
 
@@ -66,16 +66,22 @@
       </div>
     </div>
 
-    <aside class="card history-card">
-      <h2>歷史紀錄</h2>
+    </section>
+
+  <section class="card history-card smart-history-card" id="smart-history-card">
+      <div class="smart-history-head">
+        <div>
+          <h2>智慧搜尋</h2>
+          <div class="muted small">依目前正在填寫的客戶與品項，自動找出歷史訂單。</div>
+        </div>
+        <span class="smart-result-count" id="smart-result-count">0</span>
+      </div>
       <div class="field">
-        <input id="history-search" placeholder="搜尋歷史報價／訂單">
+        <input id="history-search" placeholder="可另外輸入：訂單號／專案／工作單位／規格">
       </div>
-      <div class="muted">
-        選擇客戶後，這裡將作為歷史紀錄查詢與套用區。此區暫保留版面，搜尋邏輯後續驗收。
-      </div>
-    </aside>
-  </section>
+      <div id="smart-search-context" class="smart-search-context muted">開始輸入客戶或品項後，這裡會顯示相關歷史成交紀錄。</div>
+      <div id="smart-search-results" class="smart-search-results"></div>
+    </section>
 
   <section id="normal-section" class="card quote-items-card">
     <div class="section-head">
@@ -127,6 +133,17 @@
   <input type="hidden" name="items_json" id="items-json">
   <input type="hidden" name="work_units_json" id="work-units-json">
 </form>
+
+<dialog id="history-order-modal" class="history-order-modal">
+  <div class="history-modal-head">
+    <div>
+      <h2 id="history-modal-title">歷史訂單</h2>
+      <div class="muted" id="history-modal-meta"></div>
+    </div>
+    <button type="button" class="btn-secondary" id="history-modal-close">關閉</button>
+  </div>
+  <div id="history-modal-body"></div>
+</dialog>
 
 <template id="item-template">
   <div class="quote-item js-item-row">
@@ -192,6 +209,15 @@
   const totalEl = document.getElementById('quote-total');
   const itemsSubtotalEl = document.getElementById('items-subtotal');
   const taxAmountEl = document.getElementById('tax-amount');
+  const smartResultsEl = document.getElementById('smart-search-results');
+  const smartContextEl = document.getElementById('smart-search-context');
+  const smartCountEl = document.getElementById('smart-result-count');
+  const historySearchEl = document.getElementById('history-search');
+  const historyModal = document.getElementById('history-order-modal');
+  const currentOrderId = '';
+  let smartTargetRow = null;
+  let smartTimer = null;
+  let smartRequestNo = 0;
 
   const money = n => 'NT$ ' + Number(n || 0).toLocaleString('zh-TW', {maximumFractionDigits: 2});
 
@@ -224,6 +250,138 @@
     totalEl.textContent = money(subtotalTotal + tax);
   }
 
+  function escapeHtml(v) {
+    return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function currentSmartRow() {
+    if (smartTargetRow && document.body.contains(smartTargetRow)) return smartTargetRow;
+    const projectMode = document.querySelector('input[name="mode"]:checked')?.value === 'project';
+    const root = projectMode ? projectSection : normalSection;
+    return root.querySelector('.js-item-row');
+  }
+
+  function smartCriteria() {
+    const row = currentSmartRow();
+    const unit = row?.closest('.work-unit');
+    const finishing = row ? Array.from(row.querySelectorAll('.finishing-tag')).map(x => x.dataset.value || x.textContent.trim()).filter(Boolean).join('、') : '';
+    return {
+      customer: document.getElementById('customer-name').value.trim(),
+      product: row?.querySelector('.js-product')?.value.trim() || '',
+      material: row?.querySelector('.js-material')?.value.trim() || '',
+      size: row?.querySelector('.js-size')?.value.trim() || '',
+      finishing,
+      quantity: row?.querySelector('.js-qty')?.value || '',
+      work_unit: unit?.querySelector('.js-work-unit-name')?.value.trim() || '',
+      linked_customer_id: unit?.querySelector('.js-work-unit-customer-id')?.value || '',
+      q: historySearchEl.value.trim()
+    };
+  }
+
+  function scheduleSmartSearch(row=null) {
+    if (row) smartTargetRow=row;
+    clearTimeout(smartTimer);
+    smartTimer=setTimeout(runSmartSearch,180);
+  }
+
+  async function runSmartSearch() {
+    const c=smartCriteria();
+    const meaningful=[c.customer,c.product,c.material,c.size,c.q].some(Boolean);
+    if (!meaningful) {
+      smartResultsEl.innerHTML='';
+      smartCountEl.textContent='0';
+      smartContextEl.textContent='開始輸入客戶或品項後，這裡會顯示相關歷史成交紀錄。';
+      return;
+    }
+    const params=new URLSearchParams();
+    Object.entries(c).forEach(([k,v])=>{ if(v) params.set(k,v); });
+    if (currentOrderId) params.set('exclude_order_id',currentOrderId);
+    const req=++smartRequestNo;
+    const activeRow=currentSmartRow();
+    const projectMode=document.querySelector('input[name="mode"]:checked')?.value==='project';
+    const activeRoot=projectMode?projectSection:normalSection;
+    const rowList=[...activeRoot.querySelectorAll('.js-item-row')];
+    const rowNo=Math.max(1,rowList.indexOf(activeRow)+1);
+    const label=`目前品項 ${rowNo}`;
+    smartContextEl.textContent=label+'｜'+[c.product,c.material,c.size,c.finishing,c.quantity?c.quantity+'':null,c.work_unit,c.customer,c.q].filter(Boolean).join(' ＋ ');
+    smartResultsEl.innerHTML='<div class="smart-loading muted">搜尋中…</div>';
+    const rows=await fetchJson(`/api/orders/smart-search?${params.toString()}`);
+    if(req!==smartRequestNo) return;
+    const data=Array.isArray(rows)?rows:[];
+    smartCountEl.textContent=String(data.length);
+    if(!data.length){
+      smartResultsEl.innerHTML='<div class="muted-box">沒有符合的歷史訂單。</div>';
+      return;
+    }
+    smartResultsEl.innerHTML=data.map(x=>`
+      <article class="smart-history-result">
+        <div class="smart-result-top">
+          <div>
+            <strong>${escapeHtml(x.product_name)}</strong>
+            <div class="muted small">${escapeHtml(x.customer_name)}｜${escapeHtml(x.order_number)}</div>
+          </div>
+          <div class="smart-price">${money(x.unit_price)}</div>
+        </div>
+        <div class="smart-spec">${[x.material,x.size,x.finishing,(x.quantity??'')+(x.unit||'')].filter(Boolean).map(escapeHtml).join('｜')}</div>
+        <div class="muted small">${[x.project_name,x.work_unit_name,x.created_at?String(x.created_at).slice(0,10):''].filter(Boolean).map(escapeHtml).join('｜')}</div>
+        <div class="smart-result-actions">
+          <button type="button" class="btn-secondary smart-apply" data-json='${escapeHtml(JSON.stringify(x))}'>套用</button>
+          <button type="button" class="btn-secondary smart-view" data-order-id="${x.order_id}">查看訂單</button>
+        </div>
+      </article>`).join('');
+
+    smartResultsEl.querySelectorAll('.smart-apply').forEach(btn=>{
+      btn.onclick=()=>{
+        const x=JSON.parse(btn.dataset.json);
+        const row=currentSmartRow();
+        if(!row) return;
+        row.querySelector('.js-product').value=x.product_name||'';
+        row.querySelector('.js-material').value=x.material||'';
+        row.querySelector('.js-size').value=x.size||'';
+        row.querySelector('.js-qty').value=x.quantity??1;
+        row.querySelector('.js-unit').value=x.unit||'';
+        row.querySelector('.js-price').value=x.unit_price??0;
+        row.querySelector('.js-note').value=x.note||'';
+        setFinishings(row,x.finishing||'');
+        recalc();
+        scheduleSmartSearch(row);
+      };
+    });
+    smartResultsEl.querySelectorAll('.smart-view').forEach(btn=>{
+      btn.onclick=()=>openHistoryOrder(btn.dataset.orderId);
+    });
+  }
+
+  async function openHistoryOrder(orderId) {
+    const data=await fetchJson(`/api/orders/${orderId}/history-detail`);
+    if(!data?.ok) return;
+    const o=data.order;
+    document.getElementById('history-modal-title').textContent=`訂單 ${o.order_number}`;
+    document.getElementById('history-modal-meta').textContent=[o.customer_name,o.project_name,o.status,String(o.created_at||'').slice(0,16)].filter(Boolean).join('｜');
+    const rows=(data.items||[]).map(i=>`
+      <tr>
+        <td>${escapeHtml(i.work_unit_name||'—')}</td>
+        <td><strong>${escapeHtml(i.product_name)}</strong></td>
+        <td>${escapeHtml(i.material||'—')}</td>
+        <td>${escapeHtml(i.size||'—')}</td>
+        <td>${escapeHtml(i.finishing||'—')}</td>
+        <td>${escapeHtml(i.quantity)} ${escapeHtml(i.unit||'')}</td>
+        <td>${money(i.unit_price)}</td>
+        <td>${money(i.subtotal)}</td>
+      </tr>`).join('');
+    document.getElementById('history-modal-body').innerHTML=`
+      <div class="table-wrap"><table class="history-modal-table">
+        <thead><tr><th>工作單位</th><th>品項</th><th>材質</th><th>尺寸</th><th>後加工</th><th>數量</th><th>單價</th><th>小計</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+      <div class="history-modal-total">
+        <span>品項小計 ${money(data.subtotal)}</span>
+        <span>稅額 ${money(data.tax_amount)}</span>
+        <strong>總計 ${money(data.total)}</strong>
+      </div>`;
+    historyModal.showModal();
+  }
+
   function setupProductSearch(row) {
     const input = row.querySelector('.js-product');
     const box = row.querySelector('.js-product-results');
@@ -231,6 +389,7 @@
 
     input.addEventListener('input', () => {
       clearTimeout(timer);
+      if (input.id === 'customer-name') scheduleSmartSearch();
       const q = input.value.trim();
       if (!q) { box.innerHTML = ''; box.classList.remove('show'); return; }
       timer = setTimeout(async () => {
@@ -259,6 +418,7 @@
           html += '<div class="result-group-label">品項</div>';
           html += products.map(x => `<button type="button" class="search-result" data-type="product" data-product-id="${x.id}" data-product="${x.name}"><strong>${x.name}</strong></button>`).join('');
         }
+        box.removeAttribute('hidden');
         box.innerHTML = html || '<div class="muted search-empty">沒有符合資料</div>';
         box.classList.add('show');
 
@@ -276,7 +436,10 @@
               await loadProductOptions(row, btn.dataset.productId);
             }
             box.classList.remove('show');
+            box.innerHTML='';
+            box.removeAttribute('hidden');
             recalc();
+            scheduleSmartSearch(row);
           });
         });
       }, 150);
@@ -291,7 +454,7 @@
       const tag = document.createElement('span');
       tag.className = 'finishing-tag';
       tag.textContent = '#' + v;
-      tag.addEventListener('click', () => tag.remove());
+      tag.addEventListener('click', () => { tag.remove(); scheduleSmartSearch(row); });
       holder.appendChild(tag);
     });
   }
@@ -350,13 +513,40 @@
     holder.appendChild(tag);
   }
 
+  function closeProductDropdowns(exceptRow=null) {
+    document.querySelectorAll('.js-product-results').forEach(box => {
+      if (exceptRow && exceptRow.contains(box)) return;
+      box.classList.remove('show');
+      box.innerHTML='';
+      box.removeAttribute('hidden');
+    });
+  }
+
+  function markSmartTarget(row) {
+    if (!row || !document.body.contains(row)) return;
+    document.querySelectorAll('.js-item-row.smart-active-row').forEach(x => x.classList.remove('smart-active-row'));
+    row.classList.add('smart-active-row');
+    smartTargetRow = row;
+    scheduleSmartSearch(row);
+  }
+
   function createItem(data = null) {
     const frag = itemTemplate.content.cloneNode(true);
     const row = frag.querySelector('.js-item-row');
     setupProductSearch(row);
     setupFinishingSearch(row);
-    row.querySelector('.js-qty').addEventListener('input', recalc);
+    row.querySelector('.js-qty').addEventListener('input', () => { recalc(); markSmartTarget(row); });
     row.querySelector('.js-price').addEventListener('input', recalc);
+    ['.js-product','.js-material','.js-size','.js-unit'].forEach(sel => {
+      row.querySelector(sel).addEventListener('focus', () => markSmartTarget(row));
+      row.querySelector(sel).addEventListener('input', () => scheduleSmartSearch(row));
+      row.querySelector(sel).addEventListener('change', () => scheduleSmartSearch(row));
+    });
+    row.addEventListener('pointerdown', () => markSmartTarget(row));
+    row.addEventListener('focusin', (ev) => {
+      markSmartTarget(row);
+      if (!ev.target.classList.contains('js-product') && !ev.target.closest('.js-product-results')) closeProductDropdowns();
+    });
     row.querySelector('.js-remove').onclick = () => {
       row.remove();
       recalc();
@@ -380,13 +570,26 @@
     const items = unit.querySelector('.js-unit-items');
     if (data && Array.isArray(data.items) && data.items.length) data.items.forEach(x => items.appendChild(createItem(x)));
     else items.appendChild(createItem());
-    unit.querySelector('.js-add-unit-item').onclick = () => items.appendChild(createItem());
+    unit.querySelector('.js-add-unit-item').onclick = () => {
+      closeProductDropdowns();
+      const row = createItem();
+      items.appendChild(row);
+      markSmartTarget(row);
+    };
     unit.querySelector('.js-remove-unit').onclick = () => { unit.remove(); recalc(); };
     setupCustomerSearch(
       unit.querySelector('.js-work-unit-name'),
       unit.querySelector('.js-work-unit-results'),
-      c => unit.querySelector('.js-work-unit-customer-id').value = c.id || ''
+      c => {
+        unit.querySelector('.js-work-unit-customer-id').value = c.id || '';
+        const row = unit.querySelector('.js-item-row');
+        if (row) scheduleSmartSearch(row);
+      }
     );
+    unit.querySelector('.js-work-unit-name').addEventListener('input', () => {
+      const row = unit.querySelector('.js-item-row');
+      if (row) scheduleSmartSearch(row);
+    });
     if (data) {
       unit.querySelector('.js-work-unit-name').value = data.name || '';
       unit.querySelector('.js-work-unit-customer-id').value = data.linked_customer_id || '';
@@ -469,8 +672,15 @@
       document.getElementById('customer-contact').value = c.contact_person || c.contact || '';
       document.getElementById('customer-tax-id').value = c.tax_id || c.tax_number || '';
       document.getElementById('customer-phone').value = c.phone || '';
+      scheduleSmartSearch();
     }
   );
+
+  historySearchEl.addEventListener('input', () => scheduleSmartSearch());
+  document.getElementById('history-modal-close').onclick = () => historyModal.close();
+  historyModal.addEventListener('click', e => {
+    if (e.target === historyModal) historyModal.close();
+  });
 
   // 稅別切換必須即時重算；使用表單層事件委派，新增/修改畫面皆共用。
   document.getElementById('quote-form').addEventListener('change', (e) => {
@@ -489,10 +699,16 @@
       document.getElementById('project-name').required = project;
       if (project && !workUnits.children.length) workUnits.appendChild(createWorkUnit());
       recalc();
+      scheduleSmartSearch();
     });
   });
 
-  document.getElementById('add-normal-item').onclick = () => normalItems.appendChild(createItem());
+  document.getElementById('add-normal-item').onclick = () => {
+    closeProductDropdowns();
+    const row = createItem();
+    normalItems.appendChild(row);
+    markSmartTarget(row);
+  };
   document.getElementById('add-work-unit').onclick = () => workUnits.appendChild(createWorkUnit());
 
   if (initialDraft && Object.keys(initialDraft).length) {
@@ -512,9 +728,20 @@
       else normalItems.appendChild(createItem());
     }
   } else {
-    normalItems.appendChild(createItem());
+    const firstRow=createItem();
+    normalItems.appendChild(firstRow);
+    smartTargetRow=firstRow;
+    firstRow.classList.add('smart-active-row');
   }
+  document.addEventListener('pointerdown', (ev) => {
+    if (!ev.target.closest('.js-product-wrap') && !ev.target.closest('.js-product-results')) closeProductDropdowns();
+  });
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') closeProductDropdowns();
+  });
+
   recalc();
+  scheduleSmartSearch();
 
   document.getElementById('quote-form').addEventListener('submit', () => {
     const serializeItem = row => ({

@@ -6,9 +6,13 @@
     <p>{{ order.customer_name }}{% if order.project_name %}｜{{ order.project_name }}{% endif %}{% if order.quote_number %}｜來源報價 {{ order.quote_number }}{% endif %}</p>
   </div>
   <div class="top-actions">
-    <a class="btn-secondary" href="{{ url_for('orders_list') }}">回訂單列表</a>
+    {% if from_project and order.project_id and (from_project|string) == (order.project_id|string) %}
+      <a class="btn-secondary" href="{{ url_for('projects_detail', project_id=order.project_id) }}">← 返回「{{ order.project_name }}」</a>
+    {% else %}
+      <a class="btn-secondary" href="{{ url_for('orders_list') }}">回訂單列表</a>
+    {% endif %}
     {% if order.status != '廢單' %}
-      <a class="btn-secondary" href="{{ url_for('orders_edit', order_id=order.id) }}">修改訂單</a>
+      <a class="btn-secondary" href="{{ url_for('orders_edit', order_id=order.id, from_project=from_project) if from_project else url_for('orders_edit', order_id=order.id) }}">修改訂單</a>
     {% endif %}
   </div>
 </div>
