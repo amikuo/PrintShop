@@ -7,6 +7,7 @@
   </div>
   <div class="top-actions">
     <a class="btn-secondary" href="{{ url_for('quotes_list') }}">回報價列表</a>
+    <a class="btn-secondary" href="{{ url_for('quotes_pdf', quote_id=quote.id) }}">匯出 PDF</a>
     {% if not quote.converted_order_id %}
       <a class="btn-secondary" href="{{ url_for('quotes_edit', quote_id=quote.id) }}">修改報價</a>
       <form method="post" action="{{ url_for('quotes_delete', quote_id=quote.id) }}"

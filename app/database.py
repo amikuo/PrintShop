@@ -4,15 +4,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DB_DIR = BASE_DIR / "database"
+DATA_ROOT = Path(os.environ.get("PRINTSHOP_DATA_DIR", BASE_DIR)).expanduser().resolve()
+DB_DIR = DATA_ROOT / "database"
 DB_PATH = DB_DIR / "printshop.db"
+BACKUP_DIR = DATA_ROOT / "backups"
+SCHEMA_VERSION = 2
 
 CUSTOMER_CATEGORIES = ["一般", "學校", "政府", "公司", "宗親會"]
+CUSTOMER_TYPES = {"person": "個人", "organization": "公司或單位"}
 QUOTE_STATUSES = ["報價中", "無下訂報價", "已轉訂單"]
 ORDER_STATUSES = ["設計中", "印製中", "待取貨", "完結", "廢單"]
 PROJECT_STATUSES = ["進行中", "暫停", "已完成", "已取消"]
@@ -38,10 +43,60 @@ def rows_dict(rows: Iterable[sqlite3.Row]) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def normalize_customer_text(value: Any) -> str:
+    """Normalize customer names for duplicate and alias comparisons."""
+    return "".join(str(value or "").split()).casefold()
+
+
+def display_customer_contact(customer_name: Any, contact_person: Any) -> str:
+    """Avoid showing a personal customer's name twice."""
+    contact = str(contact_person or "").strip()
+    if normalize_customer_text(customer_name) == normalize_customer_text(contact):
+        return ""
+    return contact
+
+
+def clean_customer_contact(customer_type: str, customer_name: Any, contact_person: Any) -> str:
+    contact = display_customer_contact(customer_name, contact_person)
+    return "" if customer_type == "person" else contact
+
+
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 def today_key() -> str:
     return datetime.now(TAIPEI_TZ).strftime("%y%m%d")
+
+
+def current_local_date_input() -> str:
+    return datetime.now(TAIPEI_TZ).strftime("%Y-%m-%d")
+
+
+def normalize_order_created_at(local_value: str | None) -> tuple[str, str]:
+    """Convert a Taiwan date value to SQLite UTC and its YYMMDD serial key."""
+    now_local = datetime.now(TAIPEI_TZ)
+    if local_value:
+        try:
+            selected_date = date.fromisoformat(local_value.strip()[:10])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("建立日期格式不正確。") from exc
+        if selected_date > now_local.date():
+            raise ValueError("建立日期不可晚於今天。")
+        if selected_date == now_local.date():
+            local_dt = now_local
+        else:
+            # Historical entries only need a date. Noon avoids timezone date rollover.
+            local_dt = datetime(
+                selected_date.year,
+                selected_date.month,
+                selected_date.day,
+                12,
+                0,
+                tzinfo=TAIPEI_TZ,
+            )
+    else:
+        local_dt = now_local
+    utc_value = local_dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return utc_value, local_dt.strftime("%y%m%d")
 
 
 def display_date(ts: str | None) -> str:
@@ -68,6 +123,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS customers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
+            customer_type TEXT NOT NULL DEFAULT 'organization',
             contact_person TEXT DEFAULT '',
             tax_id TEXT DEFAULT '',
             phone TEXT DEFAULT '',
@@ -80,6 +136,19 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         );
 
         CREATE INDEX IF NOT EXISTS idx_customers_name ON customers(name);
+
+        CREATE TABLE IF NOT EXISTS customer_aliases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER NOT NULL,
+            alias TEXT NOT NULL,
+            normalized_alias TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(customer_id, normalized_alias),
+            FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_customer_aliases_customer ON customer_aliases(customer_id);
+        CREATE INDEX IF NOT EXISTS idx_customer_aliases_alias ON customer_aliases(alias);
 
         CREATE TABLE IF NOT EXISTS projects (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -362,6 +431,18 @@ def _ensure_finishing_seed(conn: sqlite3.Connection) -> None:
 
 def init_database() -> None:
     conn = connect()
+    has_migrations = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+    ).fetchone()
+    if has_migrations:
+        recorded_version = int(conn.execute(
+            "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations"
+        ).fetchone()["version"])
+        if recorded_version > SCHEMA_VERSION:
+            conn.close()
+            raise RuntimeError(
+                f"資料庫 schema {recorded_version} 高於本程式支援的 {SCHEMA_VERSION}，請使用新版程式。"
+            )
     ensure_schema(conn)
 
     # V2.3 hierarchical specification model
@@ -463,6 +544,7 @@ def init_database() -> None:
         if column not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
+    _ensure_column("customers", "customer_type", "TEXT NOT NULL DEFAULT 'organization'")
     _ensure_column("quotes", "delivery_date", "TEXT DEFAULT NULL")
     _ensure_column("orders", "delivery_date", "TEXT DEFAULT NULL")
     _ensure_column("quote_work_units", "linked_customer_id", "INTEGER DEFAULT NULL")
@@ -475,7 +557,51 @@ def init_database() -> None:
     _ensure_column("orders", "void_reason", "TEXT DEFAULT ''")
     conn.execute("UPDATE orders SET status='廢單' WHERE status='已取消'")
 
-
+    # V3.0 migration baseline. Existing V2.x databases are upgraded in place;
+    # future versions append a numbered migration and never rebuild the DB.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS schema_migrations (
+               version INTEGER PRIMARY KEY,
+               applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+           )"""
+    )
+    current_version = int(conn.execute(
+        "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations"
+    ).fetchone()["version"])
+    if current_version > SCHEMA_VERSION:
+        conn.close()
+        raise RuntimeError(
+            f"資料庫 schema {current_version} 高於本程式支援的 {SCHEMA_VERSION}，請使用新版程式。"
+        )
+    if current_version < 1:
+        conn.execute("INSERT INTO schema_migrations(version) VALUES (1)")
+        current_version = 1
+    if current_version < 2:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS customer_aliases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                customer_id INTEGER NOT NULL,
+                alias TEXT NOT NULL,
+                normalized_alias TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(customer_id, normalized_alias),
+                FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_customer_aliases_customer ON customer_aliases(customer_id);
+            CREATE INDEX IF NOT EXISTS idx_customer_aliases_alias ON customer_aliases(alias);
+            """
+        )
+        duplicate_rows = conn.execute(
+            "SELECT id,name,contact_person FROM customers WHERE TRIM(contact_person)<>''"
+        ).fetchall()
+        for row in duplicate_rows:
+            if normalize_customer_text(row["name"]) == normalize_customer_text(row["contact_person"]):
+                conn.execute(
+                    "UPDATE customers SET customer_type='person',contact_person='' WHERE id=?",
+                    (row["id"],),
+                )
+        conn.execute("INSERT INTO schema_migrations(version) VALUES (2)")
 
     conn.commit()
     conn.close()
@@ -486,22 +612,28 @@ def _get_or_create_daily_sequence(conn: sqlite3.Connection, seq_date: str) -> in
         "SELECT next_no FROM daily_sequences WHERE seq_date = ?",
         (seq_date,),
     ).fetchone()
-    if row is None:
-        conn.execute(
-            "INSERT INTO daily_sequences (seq_date, next_no) VALUES (?, ?)",
-            (seq_date, 2),
+    used = conn.execute(
+        """
+        SELECT COALESCE(MAX(seq), 0) AS max_seq
+        FROM (
+            SELECT order_seq AS seq FROM orders WHERE substr(order_number, 1, 6) = ?
+            UNION ALL
+            SELECT quote_seq AS seq FROM quotes WHERE substr(quote_number, 2, 6) = ?
         )
-        return 1
-    next_no = int(row["next_no"])
+        """,
+        (seq_date, seq_date),
+    ).fetchone()
+    next_no = max(int(row["next_no"]) if row else 1, int(used["max_seq"] or 0) + 1)
     conn.execute(
-        "UPDATE daily_sequences SET next_no = ? WHERE seq_date = ?",
-        (next_no + 1, seq_date),
+        """INSERT INTO daily_sequences (seq_date, next_no) VALUES (?, ?)
+           ON CONFLICT(seq_date) DO UPDATE SET next_no=excluded.next_no""",
+        (seq_date, next_no + 1),
     )
     return next_no
 
 
-def allocate_serial(conn: sqlite3.Connection) -> tuple[str, int]:
-    seq_date = today_key()
+def allocate_serial(conn: sqlite3.Connection, seq_date: str | None = None) -> tuple[str, int]:
+    seq_date = seq_date or today_key()
     conn.execute("BEGIN IMMEDIATE")
     seq = _get_or_create_daily_sequence(conn, seq_date)
     return seq_date, seq
@@ -532,6 +664,57 @@ def refresh_expired_quotes(conn: sqlite3.Connection) -> None:
     )
 
 
+def update_customer_master(conn: sqlite3.Connection, customer_id: int, payload: dict[str, Any]) -> None:
+    existing = conn.execute("SELECT * FROM customers WHERE id=?", (customer_id,)).fetchone()
+    if not existing:
+        raise ValueError("客戶不存在。")
+
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise ValueError("客戶名稱不能空白。")
+    customer_type = str(payload.get("customer_type") or "organization").strip()
+    if customer_type not in CUSTOMER_TYPES:
+        customer_type = "organization"
+    contact = clean_customer_contact(customer_type, name, payload.get("contact_person"))
+
+    old_name = str(existing["name"] or "").strip()
+    old_normalized = normalize_customer_text(old_name)
+    new_normalized = normalize_customer_text(name)
+    if old_normalized and old_normalized != new_normalized:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO customer_aliases(customer_id,alias,normalized_alias)
+            VALUES (?,?,?)
+            """,
+            (customer_id, old_name, old_normalized),
+        )
+    if new_normalized:
+        conn.execute(
+            "DELETE FROM customer_aliases WHERE customer_id=? AND normalized_alias=?",
+            (customer_id, new_normalized),
+        )
+
+    conn.execute(
+        """
+        UPDATE customers
+           SET name=?, customer_type=?, contact_person=?, tax_id=?, phone=?, email=?,
+               category=?, note=?, updated_at=CURRENT_TIMESTAMP
+         WHERE id=?
+        """,
+        (
+            name,
+            customer_type,
+            contact,
+            str(payload.get("tax_id") or "").strip(),
+            str(payload.get("phone") or "").strip(),
+            str(payload.get("email") or "").strip(),
+            str(payload.get("category") or "一般").strip() or "一般",
+            str(payload.get("note") or "").strip(),
+            customer_id,
+        ),
+    )
+
+
 def ensure_customer(conn: sqlite3.Connection, payload: dict[str, Any]) -> int:
     customer_id = payload.get("customer_id")
     customer_name = (payload.get("customer_name") or "").strip()
@@ -541,63 +724,35 @@ def ensure_customer(conn: sqlite3.Connection, payload: dict[str, Any]) -> int:
 
     if customer_id:
         cid = int(customer_id)
-        # Do not force blank form values over existing master data.
-        if customer_name or contact or tax_id or phone:
-            existing = conn.execute(
-                "SELECT name,contact_person,tax_id,phone FROM customers WHERE id=?",
-                (cid,)
-            ).fetchone()
-            if existing:
-                conn.execute(
-                    """
-                    UPDATE customers
-                    SET name=?,
-                        contact_person=?,
-                        tax_id=?,
-                        phone=?,
-                        updated_at=CURRENT_TIMESTAMP
-                    WHERE id=?
-                    """,
-                    (
-                        customer_name or existing["name"],
-                        contact or existing["contact_person"],
-                        tax_id or existing["tax_id"],
-                        phone or existing["phone"],
-                        cid,
-                    ),
-                )
+        # Transaction forms only select a customer. Master-data changes must
+        # go through Customer Management so an edit cannot rename it silently.
+        if not conn.execute("SELECT 1 FROM customers WHERE id=?", (cid,)).fetchone():
+            raise ValueError("選取的客戶不存在。")
         return cid
 
     if not customer_name:
         raise ValueError("客戶名稱不能空白")
 
     existing = conn.execute(
-        "SELECT id,contact_person,tax_id,phone FROM customers WHERE name=? LIMIT 1",
+        "SELECT id FROM customers WHERE name=? LIMIT 1",
         (customer_name,),
     ).fetchone()
     if existing:
-        cid = int(existing["id"])
-        conn.execute(
-            """
-            UPDATE customers
-            SET contact_person=?, tax_id=?, phone=?, updated_at=CURRENT_TIMESTAMP
-            WHERE id=?
-            """,
-            (
-                contact or existing["contact_person"],
-                tax_id or existing["tax_id"],
-                phone or existing["phone"],
-                cid,
-            ),
-        )
-        return cid
+        return int(existing["id"])
+
+    customer_type = (
+        "person"
+        if contact and normalize_customer_text(customer_name) == normalize_customer_text(contact)
+        else "organization"
+    )
+    contact = clean_customer_contact(customer_type, customer_name, contact)
 
     cur = conn.execute(
         """
-        INSERT INTO customers (name, contact_person, tax_id, phone, category)
-        VALUES (?, ?, ?, ?, '一般')
+        INSERT INTO customers (name, customer_type, contact_person, tax_id, phone, category)
+        VALUES (?, ?, ?, ?, ?, '一般')
         """,
-        (customer_name, contact, tax_id, phone),
+        (customer_name, customer_type, contact, tax_id, phone),
     )
     return int(cur.lastrowid)
 
@@ -1005,7 +1160,10 @@ def update_quote_from_payload(conn: sqlite3.Connection, quote_id: int, payload: 
     save_quote_structure(conn, quote_id, payload)
 
 def create_order_from_payload(conn: sqlite3.Connection, payload: dict[str, Any], source_quote_id: int | None = None) -> int:
-    seq_date, seq = allocate_serial(conn)
+    created_at, selected_date = normalize_order_created_at(
+        payload.get("created_date") or payload.get("created_at_local")
+    )
+    seq_date, seq = allocate_serial(conn, selected_date)
     customer_id = ensure_customer(conn, payload)
     project_id = None
     if (payload.get("mode") == "project") or payload.get("project_id") or (payload.get("project_name") or "").strip():
@@ -1015,8 +1173,8 @@ def create_order_from_payload(conn: sqlite3.Connection, payload: dict[str, Any],
     cur = conn.execute(
         """
         INSERT INTO orders
-        (order_number, order_seq, quote_id, customer_id, project_id, mode, status, note, delivery_date, tax_mode, tax_rate)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (order_number, order_seq, quote_id, customer_id, project_id, mode, status, note, delivery_date, tax_mode, tax_rate, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             order_number,
@@ -1030,6 +1188,7 @@ def create_order_from_payload(conn: sqlite3.Connection, payload: dict[str, Any],
             (payload.get("delivery_date") or None),
             payload.get("tax_mode", "none"),
             5.0,
+            created_at,
         ),
     )
     order_id = int(cur.lastrowid)
@@ -1206,16 +1365,20 @@ def search_customers(conn: sqlite3.Connection, q: str, limit: int = 10) -> list[
     like = f"%{q}%"
     rows = conn.execute(
         """
-        SELECT id, name, contact_person, tax_id, phone, email, category
-        FROM customers
+        SELECT id, name, customer_type, contact_person, tax_id, phone, email, category
+        FROM customers c
         WHERE is_active = 1
-          AND (name LIKE ? OR contact_person LIKE ? OR phone LIKE ? OR tax_id LIKE ? OR email LIKE ?)
+          AND (name LIKE ? OR contact_person LIKE ? OR phone LIKE ? OR tax_id LIKE ? OR email LIKE ?
+               OR EXISTS (SELECT 1 FROM customer_aliases ca WHERE ca.customer_id=c.id AND ca.alias LIKE ?))
         ORDER BY CASE WHEN name LIKE ? THEN 0 ELSE 1 END, name
         LIMIT ?
         """,
-        (like, like, like, like, like, f"{q}%", limit),
+        (like, like, like, like, like, like, f"{q}%", limit),
     ).fetchall()
-    return rows_dict(rows)
+    result = rows_dict(rows)
+    for row in result:
+        row["contact_person"] = display_customer_contact(row["name"], row["contact_person"])
+    return result
 
 
 def search_projects(conn: sqlite3.Connection, q: str, customer_id: int | None = None, limit: int = 10) -> list[dict[str, Any]]:
@@ -1284,7 +1447,7 @@ def search_order_items(conn: sqlite3.Connection, q: str, limit: int = 20) -> lis
            OR c.name LIKE ?
            OR COALESCE(p.project_name, '') LIKE ?
            OR COALESCE(ow.name, '') LIKE ?
-        ORDER BY o.id DESC, oi.id DESC
+        ORDER BY o.created_at DESC, o.id DESC, oi.id DESC
         LIMIT ?
         """,
         (like, like, like, like, like, like, like, limit),

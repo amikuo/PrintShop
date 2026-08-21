@@ -2,12 +2,27 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 from datetime import datetime
+from io import BytesIO
 from typing import Any
 
-from flask import Flask, abort, flash, jsonify, redirect, render_template, request, url_for
+from flask import Flask, abort, flash, jsonify, redirect, render_template, request, send_file, send_from_directory, url_for
+
+from .backup import (
+    DAILY_RETENTION,
+    MONTHLY_RETENTION,
+    create_backup,
+    ensure_automatic_backups,
+    list_backups,
+    resolve_backup,
+    restore_backup,
+)
 
 from .database import (
+    CUSTOMER_TYPES,
+    DATA_ROOT,
     ORDER_STATUSES,
     PROJECT_STATUSES,
     QUOTE_STATUSES,
@@ -15,8 +30,11 @@ from .database import (
     count_tables,
     create_order_from_payload,
     create_quote_from_payload,
+    current_local_date_input,
     update_quote_from_payload,
     convert_quote_to_order,
+    clean_customer_contact,
+    display_customer_contact,
     display_date,
     init_database,
     list_finishing_options,
@@ -31,10 +49,21 @@ from .database import (
     search_projects,
     search_spec_presets,
     today_key,
+    update_customer_master,
 )
+from .pdf_export import build_document_pdf
 
 app = Flask(__name__)
 app.secret_key = "printshop-v2.2-secret"
+APP_VERSION = "3.5.0"
+
+
+@app.before_request
+def run_daily_backup_if_needed():
+    try:
+        ensure_automatic_backups()
+    except Exception:
+        app.logger.exception("Automatic database backup failed")
 
 
 def db():
@@ -82,6 +111,7 @@ def parse_payload() -> dict[str, Any]:
         "project_name": request.form.get("project_name", "").strip(),
         "note": request.form.get("note", "").strip(),
         "delivery_date": request.form.get("delivery_date", "").strip(),
+        "created_date": request.form.get("created_date", "").strip(),
         "tax_mode": request.form.get("tax_mode", "none").strip() or "none",
         "tax_rate": 5,
         "status": request.form.get("status", default_status).strip() or default_status,
@@ -95,6 +125,15 @@ def calculate_totals(items, tax_mode="none", tax_rate=5):
     subtotal = sum(float(r["subtotal"] or 0) for r in items)
     tax = int(subtotal * 0.05 + 0.5) if tax_mode == "tax" else 0
     return subtotal, tax, subtotal + tax
+
+
+def pdf_download_name(document_label: str, document_number: str, customer_name: str) -> str:
+    safe_customer = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", customer_name or "").strip()
+    safe_customer = re.sub(r"\s+", "_", safe_customer)[:40]
+    parts = [document_label, document_number]
+    if safe_customer:
+        parts.append(safe_customer)
+    return "_".join(parts) + ".pdf"
 
 
 def get_stats():
@@ -132,10 +171,16 @@ def display_date_filter(value):
     return display_date(value)
 
 
+@app.template_filter("display_contact")
+def display_contact_filter(contact_person, customer_name):
+    return display_customer_contact(customer_name, contact_person)
+
+
 @app.context_processor
 def inject_globals():
     return {
         "customer_categories": ["一般", "學校", "政府", "公司", "宗親會"],
+        "customer_types": CUSTOMER_TYPES,
         "quote_statuses": QUOTE_STATUSES,
         "order_statuses": ORDER_STATUSES,
         "project_statuses": PROJECT_STATUSES,
@@ -220,18 +265,26 @@ def api_dashboard_order_search():
     if not q:
         return jsonify([])
 
-    tokens = [x for x in q.replace("　", " ").split() if x]
+    tokens = []
+    seen_tokens = set()
+    for value in re.split(r"[\s+＋]+", q.replace("　", " ")):
+        value = value.strip()
+        normalized = value.casefold()
+        if value and normalized not in seen_tokens:
+            tokens.append(value)
+            seen_tokens.add(normalized)
     if not tokens:
         return jsonify([])
 
     conn = db()
-    clauses = []
-    params = []
+    token_clauses = []
+    params: list[Any] = []
     for token in tokens:
         like = f"%{token}%"
-        clauses.append("""(
+        token_clauses.append("""(
             o.order_number LIKE ? OR
             c.name LIKE ? OR
+            EXISTS (SELECT 1 FROM customer_aliases ca WHERE ca.customer_id=c.id AND ca.alias LIKE ?) OR
             COALESCE(p.project_name,'') LIKE ? OR
             COALESCE(ow.name,'') LIKE ? OR
             oi.product_name LIKE ? OR
@@ -240,7 +293,7 @@ def api_dashboard_order_search():
             COALESCE(oi.finishing,'') LIKE ? OR
             CAST(COALESCE(oi.quantity,'') AS TEXT) LIKE ?
         )""")
-        params.extend([like] * 9)
+        params.extend([like] * 10)
 
     rows = conn.execute(
         f"""
@@ -250,62 +303,123 @@ def api_dashboard_order_search():
             o.status,
             o.created_at,
             o.delivery_date,
+            o.note AS order_note,
             c.name AS customer_name,
+            COALESCE((SELECT GROUP_CONCAT(ca.alias, ' ') FROM customer_aliases ca WHERE ca.customer_id=c.id),'') AS customer_aliases,
             COALESCE(p.project_name,'') AS project_name,
-            COUNT(DISTINCT oi.id) AS matched_item_count,
-            GROUP_CONCAT(DISTINCT oi.product_name) AS matched_products
+            oi.id AS item_id,
+            COALESCE(oi.product_name,'') AS product_name,
+            COALESCE(oi.material,'') AS material,
+            COALESCE(oi.size,'') AS size,
+            COALESCE(oi.finishing,'') AS finishing,
+            oi.quantity,
+            COALESCE(oi.unit,'') AS unit,
+            oi.unit_price,
+            oi.subtotal,
+            COALESCE(oi.note,'') AS item_note,
+            COALESCE(ow.name,'') AS work_unit_name,
+            (SELECT COUNT(*) FROM order_items all_items WHERE all_items.order_id=o.id) AS total_item_count
         FROM orders o
         JOIN customers c ON c.id=o.customer_id
         LEFT JOIN projects p ON p.id=o.project_id
         LEFT JOIN order_items oi ON oi.order_id=o.id
         LEFT JOIN order_work_units ow ON ow.id=oi.work_unit_id
         WHERE o.status != '廢單'
-          AND {' AND '.join(clauses)}
-        GROUP BY o.id
-        ORDER BY
-            CASE WHEN o.order_number = ? THEN 0 ELSE 1 END,
-            CASE WHEN c.name = ? THEN 0 ELSE 1 END,
-            o.id DESC
-        LIMIT 30
+          AND ({' OR '.join(token_clauses)})
+        ORDER BY o.created_at DESC, o.id DESC, oi.sort_order, oi.id
         """,
-        params + [q, q],
+        params,
     ).fetchall()
 
-    result = []
+    def value_score(value: Any, token: str, exact: int, partial: int) -> int:
+        text = str(value or "").strip().casefold()
+        needle = token.casefold()
+        if not text:
+            return 0
+        if text == needle:
+            return exact
+        return partial if needle in text else 0
+
+    grouped: dict[int, dict[str, Any]] = {}
     for row in rows:
-        d = dict(row)
-        # Fetch a few matching item lines for readable preview.
-        item_clauses = []
-        item_params = [row["order_id"]]
-        for token in tokens:
-            like = f"%{token}%"
-            item_clauses.append("""(
-                oi.product_name LIKE ? OR COALESCE(oi.material,'') LIKE ? OR
-                COALESCE(oi.size,'') LIKE ? OR COALESCE(oi.finishing,'') LIKE ? OR
-                COALESCE(ow.name,'') LIKE ? OR CAST(COALESCE(oi.quantity,'') AS TEXT) LIKE ?
-            )""")
-            item_params.extend([like] * 6)
-        item_where = " AND ".join(item_clauses)
-        items = conn.execute(
-            f"""
-            SELECT oi.product_name, COALESCE(oi.material,'') AS material,
-                   COALESCE(oi.size,'') AS size, COALESCE(oi.finishing,'') AS finishing,
-                   oi.quantity, COALESCE(oi.unit,'') AS unit, oi.unit_price,
-                   COALESCE(ow.name,'') AS work_unit_name
-            FROM order_items oi
-            LEFT JOIN order_work_units ow ON ow.id=oi.work_unit_id
-            WHERE oi.order_id=?
-              AND ({item_where})
-            ORDER BY oi.id DESC
-            LIMIT 3
-            """,
-            item_params,
-        ).fetchall() if item_clauses else []
-        d["items"] = [dict(x) for x in items]
-        result.append(d)
+        order_id = int(row["order_id"])
+        if order_id not in grouped:
+            grouped[order_id] = {
+                "order_id": order_id,
+                "order_number": row["order_number"],
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "created_at_display": display_date(row["created_at"]),
+                "delivery_date": row["delivery_date"],
+                "order_note": row["order_note"] or "",
+                "customer_name": row["customer_name"],
+                "project_name": row["project_name"],
+                "total_item_count": int(row["total_item_count"] or 0),
+                "token_scores": [0] * len(tokens),
+                "item_map": {},
+            }
+        order = grouped[order_id]
+
+        quantity = row["quantity"]
+        if quantity is not None and float(quantity).is_integer():
+            quantity_text = str(int(quantity))
+        else:
+            quantity_text = str(quantity or "")
+
+        for index, token in enumerate(tokens):
+            scores = [
+                value_score(row["order_number"], token, 120, 90),
+                value_score(row["customer_name"], token, 110, 80),
+                value_score(row["customer_aliases"], token, 105, 75),
+                value_score(row["project_name"], token, 90, 65),
+                value_score(row["work_unit_name"], token, 85, 60),
+                value_score(row["product_name"], token, 100, 75),
+                value_score(row["material"], token, 80, 55),
+                value_score(row["size"], token, 80, 55),
+                value_score(row["finishing"], token, 80, 55),
+                value_score(quantity_text, token, 70, 35),
+            ]
+            order["token_scores"][index] = max(order["token_scores"][index], max(scores))
+
+        if row["item_id"] is not None:
+            order["item_map"][int(row["item_id"])] = {
+                "item_id": int(row["item_id"]),
+                "product_name": row["product_name"],
+                "material": row["material"],
+                "size": row["size"],
+                "finishing": row["finishing"],
+                "quantity": row["quantity"],
+                "unit": row["unit"],
+                "unit_price": row["unit_price"],
+                "subtotal": row["subtotal"],
+                "note": row["item_note"],
+                "work_unit_name": row["work_unit_name"],
+            }
 
     conn.close()
-    return jsonify(result)
+    result = []
+    for order in grouped.values():
+        scores = order.pop("token_scores")
+        items = list(order.pop("item_map").values())
+        order["matched_tokens"] = [tokens[i] for i, score in enumerate(scores) if score > 0]
+        order["matched_token_count"] = len(order["matched_tokens"])
+        order["query_token_count"] = len(tokens)
+        order["relevance_score"] = sum(scores)
+        order["matched_item_count"] = len(items)
+        order["items"] = items[:4]
+        order["hidden_preview_count"] = max(len(items) - len(order["items"]), 0)
+        result.append(order)
+
+    result.sort(
+        key=lambda order: (
+            order["matched_token_count"],
+            order["relevance_score"],
+            order["created_at"] or "",
+            order["order_id"],
+        ),
+        reverse=True,
+    )
+    return jsonify(result[:30])
 
 
 # ---------------- Customers ----------------
@@ -318,19 +432,23 @@ def customers_list():
         rows = conn.execute(
             """
             SELECT *
-            FROM customers
+            FROM customers c
             WHERE is_active = 1
               AND (
                 name LIKE ? OR contact_person LIKE ? OR tax_id LIKE ? OR phone LIKE ? OR email LIKE ?
+                OR EXISTS (SELECT 1 FROM customer_aliases ca WHERE ca.customer_id=c.id AND ca.alias LIKE ?)
               )
             ORDER BY name
             """,
-            (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"),
+            (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"),
         ).fetchall()
     else:
         rows = conn.execute("SELECT * FROM customers WHERE is_active = 1 ORDER BY id DESC").fetchall()
+    customers = rows_dict(rows)
+    for customer in customers:
+        customer["contact_person"] = display_customer_contact(customer["name"], customer["contact_person"])
     conn.close()
-    return render_template("customers/list.html", customers=rows, q=q)
+    return render_template("customers/list.html", customers=customers, q=q)
 
 
 @app.route("/customers/new", methods=["GET", "POST"])
@@ -340,15 +458,24 @@ def customers_new():
         if not name:
             flash("客戶名稱不能空白。")
             return redirect(url_for("customers_new"))
+        customer_type = request.form.get("customer_type", "organization").strip()
+        if customer_type not in CUSTOMER_TYPES:
+            customer_type = "organization"
+        contact = clean_customer_contact(
+            customer_type,
+            name,
+            request.form.get("contact_person", ""),
+        )
         conn = db()
         cur = conn.execute(
             """
-            INSERT INTO customers (name, contact_person, tax_id, phone, email, category, note)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO customers (name, customer_type, contact_person, tax_id, phone, email, category, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 name,
-                request.form.get("contact_person", "").strip(),
+                customer_type,
+                contact,
                 request.form.get("tax_id", "").strip(),
                 request.form.get("phone", "").strip(),
                 request.form.get("email", "").strip(),
@@ -372,31 +499,14 @@ def customers_edit(customer_id):
         conn.close()
         abort(404)
     if request.method == "POST":
-        conn.execute(
-            """
-            UPDATE customers
-               SET name = ?,
-                   contact_person = ?,
-                   tax_id = ?,
-                   phone = ?,
-                   email = ?,
-                   category = ?,
-                   note = ?,
-                   updated_at = CURRENT_TIMESTAMP
-             WHERE id = ?
-            """,
-            (
-                request.form.get("name", "").strip(),
-                request.form.get("contact_person", "").strip(),
-                request.form.get("tax_id", "").strip(),
-                request.form.get("phone", "").strip(),
-                request.form.get("email", "").strip(),
-                request.form.get("category", "一般"),
-                request.form.get("note", "").strip(),
-                customer_id,
-            ),
-        )
-        conn.commit()
+        try:
+            update_customer_master(conn, customer_id, request.form.to_dict())
+            conn.commit()
+        except ValueError as exc:
+            conn.rollback()
+            conn.close()
+            flash(str(exc))
+            return redirect(url_for("customers_edit", customer_id=customer_id))
         conn.close()
         flash("客戶資料已更新。")
         return redirect(url_for("customers_list"))
@@ -1170,6 +1280,52 @@ def quotes_detail(quote_id):
 
 
 
+@app.get("/quotes/<int:quote_id>/pdf")
+def quotes_pdf(quote_id):
+    conn = db()
+    quote = conn.execute(
+        """
+        SELECT q.*, c.name AS customer_name, c.contact_person, c.tax_id, c.phone, c.email,
+               p.project_name
+        FROM quotes q
+        JOIN customers c ON c.id = q.customer_id
+        LEFT JOIN projects p ON p.id = q.project_id
+        WHERE q.id = ?
+        """,
+        (quote_id,),
+    ).fetchone()
+    if not quote:
+        conn.close()
+        abort(404)
+    items = conn.execute(
+        "SELECT * FROM quote_items WHERE quote_id=? ORDER BY sort_order,id",
+        (quote_id,),
+    ).fetchall()
+    work_units = conn.execute(
+        "SELECT * FROM quote_work_units WHERE quote_id=? ORDER BY sort_order,id",
+        (quote_id,),
+    ).fetchall()
+    subtotal, tax_amount, total = calculate_totals(items, quote["tax_mode"], quote["tax_rate"])
+    conn.close()
+
+    pdf_bytes = build_document_pdf(
+        "quote",
+        quote,
+        items,
+        work_units,
+        subtotal=subtotal,
+        tax_amount=tax_amount,
+        total=total,
+    )
+    return send_file(
+        BytesIO(pdf_bytes),
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=pdf_download_name("報價單", quote["quote_number"], quote["customer_name"]),
+        max_age=0,
+    )
+
+
 @app.route("/quotes/<int:quote_id>/edit", methods=["GET", "POST"])
 def quotes_edit(quote_id):
     conn = db()
@@ -1290,7 +1446,7 @@ def orders_list():
     if status:
         sql += " AND o.status = ?"
         params.append(status)
-    sql += " ORDER BY o.id DESC"
+    sql += " ORDER BY o.created_at DESC, o.id DESC"
     rows = conn.execute(sql, params).fetchall()
     conn.close()
     return render_template("orders/list.html", orders=rows, q=q, status=status)
@@ -1319,7 +1475,14 @@ def orders_new():
         flash("訂單已建立。")
         return redirect(url_for("orders_detail", order_id=order_id))
 
-    return render_template("orders/form.html", draft=None, edit_order_id=None)
+    today_local = current_local_date_input()
+    return render_template(
+        "orders/form.html",
+        draft=None,
+        edit_order_id=None,
+        default_created_date=today_local,
+        max_created_date=today_local,
+    )
 
 
 @app.route("/orders/<int:order_id>/edit", methods=["GET", "POST"])
@@ -1393,6 +1556,60 @@ def orders_detail(order_id):
         subtotal=subtotal, tax_amount=tax_amount, total=total,
         payments=payments, paid_total=paid_total, balance=balance, payment_status=payment_status,
         from_project=from_project,
+    )
+
+
+@app.get("/orders/<int:order_id>/pdf")
+def orders_pdf(order_id):
+    conn = db()
+    order = conn.execute(
+        """
+        SELECT o.*, c.name AS customer_name, c.contact_person, c.tax_id, c.phone, c.email,
+               p.project_name, q.quote_number
+        FROM orders o
+        JOIN customers c ON c.id = o.customer_id
+        LEFT JOIN projects p ON p.id = o.project_id
+        LEFT JOIN quotes q ON q.id = o.quote_id
+        WHERE o.id = ?
+        """,
+        (order_id,),
+    ).fetchone()
+    if not order:
+        conn.close()
+        abort(404)
+    items = conn.execute(
+        "SELECT * FROM order_items WHERE order_id=? ORDER BY sort_order,id",
+        (order_id,),
+    ).fetchall()
+    work_units = conn.execute(
+        "SELECT * FROM order_work_units WHERE order_id=? ORDER BY sort_order,id",
+        (order_id,),
+    ).fetchall()
+    paid_total = float(conn.execute(
+        "SELECT COALESCE(SUM(amount),0) AS total FROM order_payments WHERE order_id=?",
+        (order_id,),
+    ).fetchone()["total"] or 0)
+    subtotal, tax_amount, total = calculate_totals(items, order["tax_mode"], order["tax_rate"])
+    balance = max(float(total) - paid_total, 0)
+    conn.close()
+
+    pdf_bytes = build_document_pdf(
+        "order",
+        order,
+        items,
+        work_units,
+        subtotal=subtotal,
+        tax_amount=tax_amount,
+        total=total,
+        paid_total=paid_total,
+        balance=balance,
+    )
+    return send_file(
+        BytesIO(pdf_bytes),
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=pdf_download_name("訂單", order["order_number"], order["customer_name"]),
+        max_age=0,
     )
 
 
@@ -1504,15 +1721,18 @@ def api_orders_smart_search():
         like = f"%{q}%"
         where.append("""(
             o.order_number LIKE ? OR c.name LIKE ? OR
+            EXISTS (SELECT 1 FROM customer_aliases ca WHERE ca.customer_id=c.id AND ca.alias LIKE ?) OR
             COALESCE(p.project_name,'') LIKE ? OR COALESCE(ow.name,'') LIKE ? OR
             oi.product_name LIKE ? OR COALESCE(oi.material,'') LIKE ? OR
             COALESCE(oi.size,'') LIKE ? OR COALESCE(oi.finishing,'') LIKE ?
         )""")
-        where_params.extend([like] * 8)
+        where_params.extend([like] * 9)
     elif customer:
         # Before a product is entered, customer history is useful as a preview.
-        where.append("c.name LIKE ?")
-        where_params.append(f"%{customer}%")
+        where.append("""(c.name LIKE ? OR EXISTS (
+            SELECT 1 FROM customer_aliases ca WHERE ca.customer_id=c.id AND ca.alias LIKE ?
+        ))""")
+        where_params.extend([f"%{customer}%", f"%{customer}%"])
     elif work_unit:
         where.append("COALESCE(ow.name,'') LIKE ?")
         where_params.append(f"%{work_unit}%")
@@ -1586,19 +1806,22 @@ def api_orders_smart_search():
         score_parts += [
             "CASE WHEN c.name = ? THEN 350 ELSE 0 END",
             "CASE WHEN c.name LIKE ? THEN 150 ELSE 0 END",
+            "CASE WHEN EXISTS (SELECT 1 FROM customer_aliases ca WHERE ca.customer_id=c.id AND ca.alias = ?) THEN 325 ELSE 0 END",
+            "CASE WHEN EXISTS (SELECT 1 FROM customer_aliases ca WHERE ca.customer_id=c.id AND ca.alias LIKE ?) THEN 140 ELSE 0 END",
         ]
-        score_params += [customer, f"%{customer}%"]
+        score_params += [customer, f"%{customer}%", customer, f"%{customer}%"]
 
     # Free-text search is an additional ranking signal when product already drives recall.
     if q and product:
         like=f"%{q}%"
         score_parts.append("""CASE WHEN (
             o.order_number LIKE ? OR c.name LIKE ? OR
+            EXISTS (SELECT 1 FROM customer_aliases ca WHERE ca.customer_id=c.id AND ca.alias LIKE ?) OR
             COALESCE(p.project_name,'') LIKE ? OR COALESCE(ow.name,'') LIKE ? OR
             COALESCE(oi.material,'') LIKE ? OR COALESCE(oi.size,'') LIKE ? OR
             COALESCE(oi.finishing,'') LIKE ?
         ) THEN 120 ELSE 0 END""")
-        score_params.extend([like] * 7)
+        score_params.extend([like] * 8)
 
     score_sql = " + ".join(score_parts) if score_parts else "0"
 
@@ -1622,7 +1845,7 @@ def api_orders_smart_search():
         LEFT JOIN projects p ON p.id=o.project_id
         LEFT JOIN order_work_units ow ON ow.id=oi.work_unit_id
         WHERE {' AND '.join(where)}
-        ORDER BY relevance_score DESC, o.id DESC, oi.id DESC
+        ORDER BY relevance_score DESC, o.created_at DESC, o.id DESC, oi.id DESC
         LIMIT 40
     """
     rows=conn.execute(sql, score_params + where_params).fetchall()
@@ -1659,18 +1882,71 @@ def api_order_history_detail(order_id):
         (order_id,),
     ).fetchall()
     subtotal,tax_amount,total=calculate_totals(items,order["tax_mode"],order["tax_rate"])
+    paid_total = float(conn.execute(
+        "SELECT COALESCE(SUM(amount),0) AS total FROM order_payments WHERE order_id=?",
+        (order_id,),
+    ).fetchone()["total"] or 0)
+    order_data = dict(order)
+    order_data["contact_person"] = display_customer_contact(
+        order_data["customer_name"], order_data["contact_person"]
+    )
+    order_data["created_at_display"] = display_date(order["created_at"])
     conn.close()
     return jsonify({
         "ok":True,
-        "order":dict(order),
+        "order":order_data,
         "items":[dict(x) for x in items],
         "subtotal":subtotal,
         "tax_amount":tax_amount,
         "total":total,
+        "paid_total":paid_total,
+        "balance":max(float(total)-paid_total,0),
     })
 
 
 # ---------------- Export / backup basics ----------------
+
+@app.get("/admin/backups")
+def admin_backups():
+    return render_template(
+        "admin/backups.html",
+        title="備份管理",
+        backups=list_backups(),
+        daily_retention=DAILY_RETENTION,
+        monthly_retention=MONTHLY_RETENTION,
+    )
+
+
+@app.post("/admin/backups/create")
+def admin_backups_create():
+    try:
+        path = create_backup()
+        flash(f"備份完成：{path.name}")
+    except Exception as exc:
+        flash(f"備份失敗：{exc}")
+    return redirect(url_for("admin_backups"))
+
+
+@app.get("/admin/backups/<path:name>/download")
+def admin_backups_download(name):
+    try:
+        path = resolve_backup(name)
+    except (ValueError, FileNotFoundError):
+        abort(404)
+    return send_from_directory(path.parent, path.name, as_attachment=True)
+
+
+@app.post("/admin/backups/<path:name>/restore")
+def admin_backups_restore(name):
+    if request.form.get("confirmation", "").strip() != "完整還原":
+        flash("還原已取消：請輸入「完整還原」確認。")
+        return redirect(url_for("admin_backups"))
+    try:
+        safety = restore_backup(name)
+        flash(f"完整還原成功；還原前保命備份：{safety.name}")
+    except Exception as exc:
+        flash(f"還原失敗，未完成資料庫替換：{exc}")
+    return redirect(url_for("admin_backups"))
 
 @app.route("/admin/export/json")
 def admin_export_json():
@@ -1690,9 +1966,17 @@ def admin_export_json():
 
 @app.route("/healthz")
 def healthz():
-    return {"ok": True}
+    return {
+        "ok": True,
+        "app": "PrintShop",
+        "version": APP_VERSION,
+        "data_root": str(DATA_ROOT),
+    }
 
 
 if __name__ == "__main__":
     init_database()
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    ensure_automatic_backups(force_check=True)
+    port = int(os.environ.get("PRINTSHOP_PORT", "5000"))
+    debug = os.environ.get("PRINTSHOP_DEBUG", "0") == "1"
+    app.run(host="0.0.0.0", port=port, debug=debug, use_reloader=False)

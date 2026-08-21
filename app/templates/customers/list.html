@@ -3,14 +3,14 @@
 <div class="page-head">
   <div>
     <h1>客戶管理</h1>
-    <p>客戶可直接輸入名稱建立報價或訂單；歷史資料可保留並搜尋。</p>
+    <p>可在此修改公司／單位名稱或個人姓名；改名前的名稱仍可供搜尋。</p>
   </div>
   <a class="btn" href="{{ url_for('customers_new') }}">＋ 新增客戶</a>
 </div>
 
 <div class="card">
   <form class="searchbox" method="get">
-    <input class="field input" name="q" value="{{ q }}" placeholder="搜尋客戶名稱、聯絡人、統編、電話、Email">
+    <input class="field input" name="q" value="{{ q }}" placeholder="搜尋目前或過往名稱、聯絡人、統編、電話、Email">
     <button class="btn" type="submit">搜尋</button>
   </form>
 </div>
@@ -19,22 +19,24 @@
   <table>
     <thead>
       <tr>
-        <th>客戶名稱</th><th>聯絡人</th><th>統編</th><th>電話</th><th>分類</th><th>狀態</th><th>更新</th>
+        <th>客戶／單位名稱</th><th>類型</th><th>聯絡人</th><th>統編</th><th>電話</th><th>分類</th><th>狀態</th><th>更新</th><th>操作</th>
       </tr>
     </thead>
     <tbody>
     {% for c in customers %}
       <tr>
-        <td><a href="{{ url_for('customers_edit', customer_id=c.id) }}"><strong>{{ c.name }}</strong></a></td>
+        <td><strong>{{ c.name }}</strong></td>
+        <td><span class="badge">{{ customer_types.get(c.customer_type, '公司或單位') }}</span></td>
         <td>{{ c.contact_person or '—' }}</td>
         <td>{{ c.tax_id or '—' }}</td>
         <td>{{ c.phone or '—' }}</td>
         <td><span class="badge">{{ c.category }}</span></td>
         <td>{% if c.is_active %}<span class="badge good">啟用</span>{% else %}<span class="badge danger">停用</span>{% endif %}</td>
         <td>{{ c.updated_at[:16] if c.updated_at else '—' }}</td>
+        <td><a class="btn-secondary compact-btn" href="{{ url_for('customers_edit', customer_id=c.id) }}">編輯</a></td>
       </tr>
     {% else %}
-      <tr><td colspan="7" class="muted">目前沒有客戶。</td></tr>
+      <tr><td colspan="9" class="muted">目前沒有客戶。</td></tr>
     {% endfor %}
     </tbody>
   </table>
