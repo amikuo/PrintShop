@@ -43,6 +43,15 @@
         <textarea name="note" rows="3">{{ draft.note if draft else '' }}</textarea>
       </div>
 
+      {% if not draft %}
+      <div class="field">
+        <label>建立日期</label>
+        <input type="date" name="created_date" id="created-date"
+               value="{{ default_created_date }}" max="{{ max_created_date }}" required>
+        <div class="muted" style="margin-top:5px">預設為今天；補登歷史訂單時只需選擇過往日期，不需要填寫時間。</div>
+      </div>
+      {% endif %}
+
       <div class="field">
         <label>交貨時間</label>
         <input type="date" name="delivery_date" id="delivery-date" value="{{ draft.delivery_date if draft else '' }}" placeholder="YYYY-MM-DD">

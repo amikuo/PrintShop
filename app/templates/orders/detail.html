@@ -11,6 +11,7 @@
     {% else %}
       <a class="btn-secondary" href="{{ url_for('orders_list') }}">回訂單列表</a>
     {% endif %}
+    <a class="btn-secondary" href="{{ url_for('orders_pdf', order_id=order.id) }}">匯出 PDF</a>
     {% if order.status != '廢單' %}
       <a class="btn-secondary" href="{{ url_for('orders_edit', order_id=order.id, from_project=from_project) if from_project else url_for('orders_edit', order_id=order.id) }}">修改訂單</a>
     {% endif %}

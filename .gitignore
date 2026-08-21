@@ -1,8 +1,12 @@
 __pycache__/
+.test_deps/
 *.pyc
 database/*.db
 database/*.sqlite
 database/*.sqlite3
+backups/*.db
+output/
+tmp/
 .venv/
 venv/
 .env

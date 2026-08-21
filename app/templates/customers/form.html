@@ -9,9 +9,22 @@
 </div>
 
 <form method="post" class="card">
+  {% set selected_type = customer.customer_type if customer and customer.customer_type else 'organization' %}
+  <div class="field customer-type-field">
+    <label>客戶類型 *</label>
+    <div class="customer-type-options">
+      {% for value, label in customer_types.items() %}
+        <label class="customer-type-option">
+          <input type="radio" name="customer_type" value="{{ value }}" {% if selected_type == value %}checked{% endif %}>
+          <span>{{ label }}</span>
+        </label>
+      {% endfor %}
+    </div>
+    <div class="muted small" id="customer-type-help"></div>
+  </div>
   <div class="grid cols-3">
-    <div class="field"><label>客戶名稱 *</label><input name="name" value="{{ customer.name if customer else '' }}" required></div>
-    <div class="field"><label>聯絡人</label><input name="contact_person" value="{{ customer.contact_person if customer else '' }}"></div>
+    <div class="field"><label id="customer-name-label">公司／單位名稱 *</label><input name="name" value="{{ customer.name if customer else '' }}" required></div>
+    <div class="field" id="customer-contact-field"><label>聯絡人</label><input id="customer-contact-input" name="contact_person" value="{{ customer.contact_person if customer else '' }}"></div>
     <div class="field"><label>統編</label><input name="tax_id" value="{{ customer.tax_id if customer else '' }}"></div>
     <div class="field"><label>電話</label><input name="phone" value="{{ customer.phone if customer else '' }}"></div>
     <div class="field"><label>Email</label><input type="email" name="email" value="{{ customer.email if customer else '' }}"></div>
@@ -28,4 +41,28 @@
     <button class="btn" type="submit">儲存</button>
   </div>
 </form>
+
+<script>
+(() => {
+  const radios = document.querySelectorAll('input[name="customer_type"]');
+  const nameLabel = document.getElementById('customer-name-label');
+  const contactField = document.getElementById('customer-contact-field');
+  const contactInput = document.getElementById('customer-contact-input');
+  const help = document.getElementById('customer-type-help');
+
+  function refreshCustomerType() {
+    const type = document.querySelector('input[name="customer_type"]:checked')?.value || 'organization';
+    const isPerson = type === 'person';
+    nameLabel.textContent = isPerson ? '姓名 *' : '公司／單位名稱 *';
+    contactField.hidden = isPerson;
+    contactInput.disabled = isPerson;
+    help.textContent = isPerson
+      ? '個人客戶只顯示一次姓名，不需要再填聯絡人。'
+      : '公司或單位可另外填寫聯絡人；之後可在客戶管理修改名稱。';
+  }
+
+  radios.forEach(radio => radio.addEventListener('change', refreshCustomerType));
+  refreshCustomerType();
+})();
+</script>
 {% endblock %}

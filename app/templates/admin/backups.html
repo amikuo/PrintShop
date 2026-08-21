@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div><h1>備份管理</h1><p>程式更新與正式營業資料分開管理。</p></div>
+  <form method="post" action="{{ url_for('admin_backups_create') }}">
+    <button class="btn" type="submit">立即備份</button>
+  </form>
+</div>
+
+<div class="card" style="margin-bottom:16px">
+  <strong>自動備份保留規則</strong>
+  <p class="muted">每天首次使用系統時建立每日備份，保留最近 {{ daily_retention }} 份；每月另存一份月備份，保留最近 {{ monthly_retention }} 份。手動備份與還原前保命備份不會被自動刪除。</p>
+</div>
+
+<div class="card" style="margin-bottom:16px">
+  <strong>還原會完整取代目前資料</strong>
+  <p class="muted">系統不會合併資料；執行前會自動建立一份還原前保命備份。</p>
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>備份時間</th><th>檔名</th><th>大小</th><th>類型</th><th>操作</th></tr></thead>
+    <tbody>
+    {% for backup in backups %}
+      <tr>
+        <td>{{ backup.modified.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+        <td>{{ backup.name }}</td>
+        <td>{{ '%.1f'|format(backup.size / 1024) }} KB</td>
+        <td>{{ backup.type_label }}</td>
+        <td>
+          <a class="btn-secondary" href="{{ url_for('admin_backups_download', name=backup.name) }}">下載</a>
+          <form method="post" action="{{ url_for('admin_backups_restore', name=backup.name) }}" style="display:inline-flex;gap:8px;margin-left:8px" onsubmit="return confirm('確定要完整還原？目前資料將被選定備份取代。')">
+            <input name="confirmation" placeholder="輸入：完整還原" required style="width:150px">
+            <button class="btn-danger" type="submit">完整還原</button>
+          </form>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5">目前沒有備份。</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

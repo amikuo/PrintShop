@@ -37,15 +37,32 @@
   <div class="dashboard-smart-head">
     <div>
       <h2>智慧訂單搜尋</h2>
-      <p class="muted">可搜尋訂單號、客戶、專案、工作單位、品項、材質、尺寸、後加工與數量。</p>
+      <p class="muted">空白或＋可增加條件；任一條件符合就會顯示，符合條件越多越前面。</p>
     </div>
     <span class="smart-result-count" id="dashboard-smart-count">0</span>
   </div>
   <div class="dashboard-smart-input-wrap">
-    <input id="dashboard-smart-input" autocomplete="off" placeholder="搜尋訂單、客戶、專案、工作單位、品項、規格…">
+    <input id="dashboard-smart-input" autocomplete="off" placeholder="例如：瑞塔 + 名片 + 象牙卡">
   </div>
   <div id="dashboard-smart-results" class="dashboard-smart-results"></div>
 </section>
+
+<dialog id="dashboard-order-modal" class="history-order-modal dashboard-order-modal">
+  <div class="history-modal-head">
+    <div>
+      <h2 id="dashboard-modal-title">完整訂單內容</h2>
+      <div class="muted" id="dashboard-modal-meta"></div>
+    </div>
+    <button type="button" class="btn-secondary" id="dashboard-modal-close-top">關閉</button>
+  </div>
+  <div id="dashboard-modal-content"></div>
+  <div class="dashboard-modal-nav">
+    <button type="button" class="btn-secondary" id="dashboard-modal-prev">← 上一筆</button>
+    <span class="muted" id="dashboard-modal-position"></span>
+    <button type="button" class="btn-secondary" id="dashboard-modal-next">下一筆 →</button>
+    <button type="button" class="btn" id="dashboard-modal-close-bottom">關閉</button>
+  </div>
+</dialog>
 
 <div style="height:18px"></div>
 
@@ -104,32 +121,47 @@
   const input=document.getElementById('dashboard-smart-input');
   const box=document.getElementById('dashboard-smart-results');
   const count=document.getElementById('dashboard-smart-count');
+  const modal=document.getElementById('dashboard-order-modal');
+  const modalTitle=document.getElementById('dashboard-modal-title');
+  const modalMeta=document.getElementById('dashboard-modal-meta');
+  const modalContent=document.getElementById('dashboard-modal-content');
+  const modalPrev=document.getElementById('dashboard-modal-prev');
+  const modalNext=document.getElementById('dashboard-modal-next');
+  const modalPosition=document.getElementById('dashboard-modal-position');
   if(!input || !box) return;
   let timer=null, requestNo=0;
+  let resultRows=[], currentModalIndex=-1;
+  const modalCache=new Map();
 
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const money=v=>'NT$ '+Number(v||0).toLocaleString('zh-TW',{maximumFractionDigits:0});
 
-  async function run(){
-    const q=input.value.trim();
-    if(!q){ box.innerHTML=''; count.textContent='0'; return; }
-    const n=++requestNo;
-    box.innerHTML='<div class="muted dashboard-smart-loading">搜尋中…</div>';
-    const res=await fetch(`/api/dashboard/order-search?q=${encodeURIComponent(q)}`);
-    const rows=await res.json();
-    if(n!==requestNo) return;
+  function renderResultItem(i){
+    const specs=[i.material,i.size,i.finishing].filter(Boolean).map(esc).join('｜') || '無其他規格';
+    const quantity=`${i.quantity??''}${i.unit||''}`;
+    return `<div class="dashboard-smart-item">
+      <div class="dashboard-smart-item-main">
+        <strong>${esc(i.work_unit_name?i.work_unit_name+'｜':'')}${esc(i.product_name)}</strong>
+        <span class="muted">${specs}</span>
+        ${i.note?`<span class="dashboard-item-note">備註：${esc(i.note)}</span>`:''}
+      </div>
+      <span>${esc(quantity)}</span>
+      <div class="dashboard-smart-item-money"><span>單價 ${money(i.unit_price)}</span><strong>小計 ${money(i.subtotal)}</strong></div>
+    </div>`;
+  }
+
+  function renderResults(rows){
+    resultRows=rows;
     count.textContent=String(rows.length||0);
     if(!rows.length){
       box.innerHTML='<div class="muted-box">找不到符合的訂單。</div>';
       return;
     }
-    box.innerHTML=rows.map(o=>{
-      const items=(o.items||[]).map(i=>`
-        <div class="dashboard-smart-item">
-          <span>${esc(i.work_unit_name?i.work_unit_name+'｜':'')}${esc(i.product_name)}</span>
-          <span class="muted">${[i.material,i.size,i.finishing,(i.quantity??'')+(i.unit||'')].filter(Boolean).map(esc).join('｜')}</span>
-          <strong>${money(i.unit_price)}</strong>
-        </div>`).join('');
+    box.innerHTML=rows.map((o,index)=>{
+      const items=(o.items||[]).map(renderResultItem).join('');
+      const matched=(o.matched_tokens||[]).map(token=>`<span class="dashboard-match-token">${esc(token)}</span>`).join('');
+      const more=Number(o.total_item_count||0)>Number((o.items||[]).length)
+        ? `<div class="muted dashboard-more-items">本訂單共 ${Number(o.total_item_count||0)} 個品項，完整內容可在原頁查看。</div>`:'';
       return `<article class="dashboard-smart-order">
         <div class="dashboard-smart-order-head">
           <div>
@@ -139,23 +171,119 @@
           </div>
           <span class="status-inline"><span>${esc(o.status)}</span><span class="status-dot status-${esc(o.status)}"></span></span>
         </div>
-        <div class="dashboard-smart-meta muted">
-          建立 ${esc(String(o.created_at||'').slice(0,10))}
-          ${o.delivery_date?`｜交貨 ${esc(o.delivery_date)}`:''}
-          ｜符合 ${Number(o.matched_item_count||0)} 個品項
+        <div class="dashboard-match-summary">
+          <strong>符合 ${Number(o.matched_token_count||0)}／${Number(o.query_token_count||0)} 個條件</strong>
+          <div class="dashboard-match-tokens">${matched}</div>
         </div>
-        <div class="dashboard-smart-items">${items}</div>
-        <div class="dashboard-smart-actions">
-          <a class="btn-secondary" href="/orders/${o.order_id}">查看訂單</a>
+        <div class="dashboard-smart-items">${items || '<div class="muted">此訂單沒有品項內容。</div>'}</div>
+        ${more}
+        ${o.order_note?`<div class="dashboard-order-note">訂單備註：${esc(o.order_note)}</div>`:''}
+        <div class="dashboard-result-footer">
+          <span class="dashboard-smart-meta muted">建立 ${esc(o.created_at_display||'—')}${o.delivery_date?`｜交貨 ${esc(o.delivery_date)}`:''}</span>
+          <button type="button" class="btn-secondary dashboard-view-order" data-result-index="${index}">查看完整內容</button>
         </div>
       </article>`;
     }).join('');
+  }
+
+  async function run(){
+    const q=input.value.trim();
+    if(!q){ box.innerHTML=''; count.textContent='0'; resultRows=[]; return; }
+    const n=++requestNo;
+    box.innerHTML='<div class="muted dashboard-smart-loading">搜尋中…</div>';
+    try{
+      const res=await fetch(`/api/dashboard/order-search?q=${encodeURIComponent(q)}`);
+      const rows=await res.json();
+      if(n!==requestNo) return;
+      renderResults(rows);
+    }catch(error){
+      if(n!==requestNo) return;
+      resultRows=[];
+      count.textContent='0';
+      box.innerHTML='<div class="muted-box">搜尋暫時無法完成，請稍後再試。</div>';
+    }
+  }
+
+  function updateModalNavigation(){
+    modalPrev.disabled=currentModalIndex<=0;
+    modalNext.disabled=currentModalIndex<0 || currentModalIndex>=resultRows.length-1;
+    modalPosition.textContent=currentModalIndex>=0?`${currentModalIndex+1}／${resultRows.length}`:'';
+  }
+
+  function renderModal(data){
+    const o=data.order||{};
+    modalTitle.textContent=`${o.order_number||''}｜${o.customer_name||''}`;
+    modalMeta.textContent=[o.project_name,o.status,`建立 ${o.created_at_display||'—'}`,o.delivery_date?`交貨 ${o.delivery_date}`:''].filter(Boolean).join('｜');
+    const rows=(data.items||[]).map((item,index)=>`<tr>
+      <td>${index+1}</td>
+      <td>${esc(item.work_unit_name||'—')}</td>
+      <td><strong>${esc(item.product_name)}</strong>${item.note?`<div class="muted small">備註：${esc(item.note)}</div>`:''}</td>
+      <td>${esc(item.material||'—')}</td>
+      <td>${esc(item.size||'—')}</td>
+      <td>${esc(item.finishing||'—')}</td>
+      <td>${esc(`${item.quantity??''}${item.unit||''}`)}</td>
+      <td>${money(item.unit_price)}</td>
+      <td>${money(item.subtotal)}</td>
+    </tr>`).join('');
+    modalContent.innerHTML=`
+      <div class="dashboard-modal-customer">
+        <div><span class="muted">客戶</span><strong>${esc(o.customer_name||'—')}</strong></div>
+        <div><span class="muted">聯絡人</span><strong>${esc(o.contact_person||'—')}</strong></div>
+        <div><span class="muted">電話</span><strong>${esc(o.phone||'—')}</strong></div>
+        <div><span class="muted">統編</span><strong>${esc(o.tax_id||'—')}</strong></div>
+      </div>
+      ${o.note?`<div class="dashboard-modal-note"><strong>訂單備註</strong><div>${esc(o.note)}</div></div>`:''}
+      <div class="table-wrap"><table class="history-modal-table">
+        <thead><tr><th>#</th><th>工作單位</th><th>品項</th><th>材質</th><th>尺寸</th><th>後加工</th><th>數量</th><th>單價</th><th>小計</th></tr></thead>
+        <tbody>${rows||'<tr><td colspan="9" class="muted">沒有品項內容。</td></tr>'}</tbody>
+      </table></div>
+      <div class="history-modal-total">
+        <span>品項小計 <strong>${money(data.subtotal)}</strong></span>
+        <span>稅額 <strong>${money(data.tax_amount)}</strong></span>
+        <span>總計 <strong>${money(data.total)}</strong></span>
+        <span>已收 <strong>${money(data.paid_total)}</strong></span>
+        <span>未收 <strong>${money(data.balance)}</strong></span>
+      </div>`;
+  }
+
+  async function openModalAt(index){
+    if(index<0 || index>=resultRows.length) return;
+    currentModalIndex=index;
+    updateModalNavigation();
+    const order=resultRows[index];
+    modalTitle.textContent=`${order.order_number}｜${order.customer_name}`;
+    modalMeta.textContent='讀取完整內容中…';
+    modalContent.innerHTML='<div class="muted dashboard-smart-loading">讀取中…</div>';
+    if(!modal.open) modal.showModal();
+    try{
+      let data=modalCache.get(order.order_id);
+      if(!data){
+        const response=await fetch(`/api/orders/${order.order_id}/history-detail`);
+        data=await response.json();
+        if(!response.ok || !data.ok) throw new Error('load failed');
+        modalCache.set(order.order_id,data);
+      }
+      if(resultRows[currentModalIndex]?.order_id!==order.order_id) return;
+      renderModal(data);
+    }catch(error){
+      modalMeta.textContent='';
+      modalContent.innerHTML='<div class="muted-box">無法讀取這張訂單，請稍後再試。</div>';
+    }
   }
 
   input.addEventListener('input',()=>{
     clearTimeout(timer);
     timer=setTimeout(run,180);
   });
+  box.addEventListener('click',event=>{
+    const button=event.target.closest('.dashboard-view-order');
+    if(button) openModalAt(Number(button.dataset.resultIndex));
+  });
+  modalPrev.addEventListener('click',()=>openModalAt(currentModalIndex-1));
+  modalNext.addEventListener('click',()=>openModalAt(currentModalIndex+1));
+  document.getElementById('dashboard-modal-close-top').addEventListener('click',()=>modal.close());
+  document.getElementById('dashboard-modal-close-bottom').addEventListener('click',()=>modal.close());
+  modal.addEventListener('click',event=>{ if(event.target===modal) modal.close(); });
 })();
 </script>
 
