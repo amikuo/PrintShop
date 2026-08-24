@@ -100,7 +100,7 @@ class DashboardSearchTests(unittest.TestCase):
         health = self.client.get("/healthz").get_json()
         self.assertTrue(health["ok"])
         self.assertEqual(health["app"], "PrintShop")
-        self.assertEqual(health["version"], "3.5.0")
+        self.assertEqual(health["version"], "3.7.1")
         self.assertTrue(health["data_root"])
 
 

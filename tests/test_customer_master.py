@@ -46,7 +46,6 @@ class CustomerMasterTests(unittest.TestCase):
                 "customer_type": "person",
                 "name": "Chloe Wu",
                 "contact_person": " Chloe  Wu ",
-                "category": "一般",
             },
             follow_redirects=True,
         )
@@ -63,11 +62,37 @@ class CustomerMasterTests(unittest.TestCase):
         self.assertIn("編輯".encode("utf-8"), listing.data)
         self.assertNotIn("<td>Chloe Wu</td>".encode("utf-8"), listing.data)
 
+    def test_customer_form_uses_five_integrated_types_and_optional_contact(self):
+        form = self.client.get("/customers/new")
+        self.assertEqual(form.status_code, 200)
+        for label in ("個人", "學校", "政府", "公司", "宗親會／協會"):
+            self.assertIn(label.encode("utf-8"), form.data)
+        self.assertNotIn("<label>分類</label>".encode("utf-8"), form.data)
+
+        response = self.client.post(
+            "/customers/new",
+            data={
+                "customer_type": "school",
+                "name": "中正國小",
+                "contact_person": "",
+            },
+            follow_redirects=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        conn = database.connect()
+        customer = conn.execute(
+            "SELECT customer_type,contact_person,category FROM customers WHERE name='中正國小'"
+        ).fetchone()
+        conn.close()
+        self.assertEqual(customer["customer_type"], "school")
+        self.assertEqual(customer["contact_person"], "")
+        self.assertEqual(customer["category"], "學校")
+
     def test_rename_keeps_old_alias_for_customer_and_dashboard_search(self):
         conn = database.connect()
         customer_id = conn.execute(
             "INSERT INTO customers(name,customer_type) VALUES (?,?)",
-            ("廣達舊名稱", "organization"),
+            ("廣達舊名稱", "company"),
         ).lastrowid
         conn.commit()
         order_id = database.create_order_from_payload(
@@ -86,10 +111,9 @@ class CustomerMasterTests(unittest.TestCase):
         response = self.client.post(
             f"/customers/{customer_id}/edit",
             data={
-                "customer_type": "organization",
+                "customer_type": "company",
                 "name": "廣達新名稱",
                 "contact_person": "洪先生",
-                "category": "公司",
             },
             follow_redirects=True,
         )
@@ -129,7 +153,7 @@ class CustomerMasterTests(unittest.TestCase):
         customer_id = conn.execute(
             """
             INSERT INTO customers(name,customer_type,contact_person,phone)
-            VALUES ('固定單位','organization','王小姐','05-1111-222')
+            VALUES ('固定單位','company','王小姐','05-1111-222')
             """
         ).lastrowid
         conn.commit()
@@ -156,23 +180,53 @@ class CustomerMasterTests(unittest.TestCase):
         self.assertEqual(customer["contact_person"], "王小姐")
         self.assertEqual(customer["phone"], "05-1111-222")
 
-    def test_schema_two_migration_cleans_existing_duplicate(self):
+    def test_schema_three_migration_sets_existing_customers_to_person_without_breaking_links(self):
         conn = database.connect()
         customer_id = conn.execute(
-            "INSERT INTO customers(name,customer_type,contact_person) VALUES ('林小美','organization',' 林 小美 ')",
+            "INSERT INTO customers(name,customer_type,contact_person) VALUES ('測試公司','company','王小姐')",
         ).lastrowid
-        conn.execute("DELETE FROM schema_migrations WHERE version=2")
+        conn.commit()
+        order_id = database.create_order_from_payload(
+            conn,
+            {
+                "customer_id": customer_id,
+                "customer_name": "不應改名",
+                "created_date": "2026-08-18",
+                "mode": "normal",
+                "items": [self._item()],
+            },
+        )
+        conn.execute("DELETE FROM schema_migrations WHERE version=3")
         conn.commit()
         conn.close()
 
         database.init_database()
         conn = database.connect()
         customer = conn.execute("SELECT * FROM customers WHERE id=?", (customer_id,)).fetchone()
+        linked_customer_id = conn.execute(
+            "SELECT customer_id FROM orders WHERE id=?", (order_id,)
+        ).fetchone()["customer_id"]
         version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
         conn.close()
         self.assertEqual(customer["customer_type"], "person")
-        self.assertEqual(customer["contact_person"], "")
-        self.assertEqual(version, 2)
+        self.assertEqual(customer["contact_person"], "王小姐")
+        self.assertEqual(linked_customer_id, customer_id)
+        self.assertEqual(version, 3)
+
+        listing = self.client.get("/customers")
+        self.assertNotIn("王小姐".encode("utf-8"), listing.data)
+
+        response = self.client.post(
+            f"/customers/{customer_id}/edit",
+            data={
+                "customer_type": "company",
+                "name": "測試公司",
+                "contact_person": "王小姐",
+            },
+            follow_redirects=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("王小姐".encode("utf-8"), response.data)
 
 
 if __name__ == "__main__":

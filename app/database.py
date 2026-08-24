@@ -14,10 +14,25 @@ DATA_ROOT = Path(os.environ.get("PRINTSHOP_DATA_DIR", BASE_DIR)).expanduser().re
 DB_DIR = DATA_ROOT / "database"
 DB_PATH = DB_DIR / "printshop.db"
 BACKUP_DIR = DATA_ROOT / "backups"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
-CUSTOMER_CATEGORIES = ["一般", "學校", "政府", "公司", "宗親會"]
-CUSTOMER_TYPES = {"person": "個人", "organization": "公司或單位"}
+# V3.6 consolidates the former customer type and category into one field.
+# The physical category column remains for backward compatibility with older
+# databases, but new code treats customer_type as the single source of truth.
+CUSTOMER_TYPES = {
+    "person": "個人",
+    "school": "學校",
+    "government": "政府",
+    "company": "公司",
+    "association": "宗親會／協會",
+}
+LEGACY_CATEGORY_BY_CUSTOMER_TYPE = {
+    "person": "一般",
+    "school": "學校",
+    "government": "政府",
+    "company": "公司",
+    "association": "宗親會",
+}
 QUOTE_STATUSES = ["報價中", "無下訂報價", "已轉訂單"]
 ORDER_STATUSES = ["設計中", "印製中", "待取貨", "完結", "廢單"]
 PROJECT_STATUSES = ["進行中", "暫停", "已完成", "已取消"]
@@ -48,8 +63,14 @@ def normalize_customer_text(value: Any) -> str:
     return "".join(str(value or "").split()).casefold()
 
 
-def display_customer_contact(customer_name: Any, contact_person: Any) -> str:
-    """Avoid showing a personal customer's name twice."""
+def display_customer_contact(
+    customer_name: Any,
+    contact_person: Any,
+    customer_type: Any = None,
+) -> str:
+    """Show contacts only for non-person customers and avoid duplicates."""
+    if str(customer_type or "").strip() == "person":
+        return ""
     contact = str(contact_person or "").strip()
     if normalize_customer_text(customer_name) == normalize_customer_text(contact):
         return ""
@@ -123,7 +144,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS customers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
-            customer_type TEXT NOT NULL DEFAULT 'organization',
+            customer_type TEXT NOT NULL DEFAULT 'person',
             contact_person TEXT DEFAULT '',
             tax_id TEXT DEFAULT '',
             phone TEXT DEFAULT '',
@@ -544,7 +565,7 @@ def init_database() -> None:
         if column not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
-    _ensure_column("customers", "customer_type", "TEXT NOT NULL DEFAULT 'organization'")
+    _ensure_column("customers", "customer_type", "TEXT NOT NULL DEFAULT 'person'")
     _ensure_column("quotes", "delivery_date", "TEXT DEFAULT NULL")
     _ensure_column("orders", "delivery_date", "TEXT DEFAULT NULL")
     _ensure_column("quote_work_units", "linked_customer_id", "INTEGER DEFAULT NULL")
@@ -602,6 +623,15 @@ def init_database() -> None:
                     (row["id"],),
                 )
         conn.execute("INSERT INTO schema_migrations(version) VALUES (2)")
+        current_version = 2
+    if current_version < 3:
+        # The user approved a simple testing-stage migration: every existing
+        # customer starts as a person and can be reclassified manually. Keep
+        # distinct legacy contact names in storage so they reappear if the
+        # customer is later changed to a non-person type; personal displays
+        # still hide them.
+        conn.execute("UPDATE customers SET customer_type='person'")
+        conn.execute("INSERT INTO schema_migrations(version) VALUES (3)")
 
     conn.commit()
     conn.close()
@@ -672,9 +702,9 @@ def update_customer_master(conn: sqlite3.Connection, customer_id: int, payload: 
     name = str(payload.get("name") or "").strip()
     if not name:
         raise ValueError("客戶名稱不能空白。")
-    customer_type = str(payload.get("customer_type") or "organization").strip()
+    customer_type = str(payload.get("customer_type") or "person").strip()
     if customer_type not in CUSTOMER_TYPES:
-        customer_type = "organization"
+        customer_type = "person"
     contact = clean_customer_contact(customer_type, name, payload.get("contact_person"))
 
     old_name = str(existing["name"] or "").strip()
@@ -708,7 +738,7 @@ def update_customer_master(conn: sqlite3.Connection, customer_id: int, payload: 
             str(payload.get("tax_id") or "").strip(),
             str(payload.get("phone") or "").strip(),
             str(payload.get("email") or "").strip(),
-            str(payload.get("category") or "一般").strip() or "一般",
+            LEGACY_CATEGORY_BY_CUSTOMER_TYPE[customer_type],
             str(payload.get("note") or "").strip(),
             customer_id,
         ),
@@ -741,18 +771,25 @@ def ensure_customer(conn: sqlite3.Connection, payload: dict[str, Any]) -> int:
         return int(existing["id"])
 
     customer_type = (
-        "person"
-        if contact and normalize_customer_text(customer_name) == normalize_customer_text(contact)
-        else "organization"
+        "company"
+        if contact and normalize_customer_text(customer_name) != normalize_customer_text(contact)
+        else "person"
     )
     contact = clean_customer_contact(customer_type, customer_name, contact)
 
     cur = conn.execute(
         """
         INSERT INTO customers (name, customer_type, contact_person, tax_id, phone, category)
-        VALUES (?, ?, ?, ?, ?, '一般')
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (customer_name, customer_type, contact, tax_id, phone),
+        (
+            customer_name,
+            customer_type,
+            contact,
+            tax_id,
+            phone,
+            LEGACY_CATEGORY_BY_CUSTOMER_TYPE[customer_type],
+        ),
     )
     return int(cur.lastrowid)
 
@@ -1377,7 +1414,9 @@ def search_customers(conn: sqlite3.Connection, q: str, limit: int = 10) -> list[
     ).fetchall()
     result = rows_dict(rows)
     for row in result:
-        row["contact_person"] = display_customer_contact(row["name"], row["contact_person"])
+        row["contact_person"] = display_customer_contact(
+            row["name"], row["contact_person"], row["customer_type"]
+        )
     return result
 
 

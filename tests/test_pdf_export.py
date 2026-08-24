@@ -84,6 +84,8 @@ class PdfExportTests(unittest.TestCase):
         text = reader.pages[0].extract_text() or ""
         self.assertIn("報價單", text)
         self.assertIn("報價測試客戶", text)
+        self.assertNotIn("報價中", text)
+        self.assertNotIn("狀態：", text)
         self.assertIn("規格", text)
         self.assertNotIn("規格(mm)", text)
         self.assertIn("不同設備顯色方式不同", text)
@@ -132,6 +134,8 @@ class PdfExportTests(unittest.TestCase):
             self.assertIn("應付", page_text)
             self.assertIn("已收款", page_text)
             self.assertIn("5,000", page_text)
+            self.assertNotIn("印製中", page_text)
+            self.assertNotIn("狀態：", page_text)
         self.assertNotIn("不同設備顯色方式不同", page_texts[0])
         self.assertNotIn("未收", "\n".join(page_texts))
         self.assertEqual(page_texts[-1].count("已收款"), 1)
@@ -159,6 +163,8 @@ class PdfExportTests(unittest.TestCase):
         self.assertIn("應付", text)
         self.assertNotIn("已收款", text)
         self.assertNotIn("未收", text)
+        self.assertNotIn("設計中", text)
+        self.assertNotIn("狀態：", text)
 
     def test_person_customer_name_is_not_repeated_as_contact(self):
         conn = database.connect()

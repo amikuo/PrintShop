@@ -5,7 +5,12 @@
     <h1>{{ project.project_name if project else '新增專案' }}</h1>
     <p>{% if project %}專案頁呈現此 project_id 目前完整的工作內容，而非以名稱比對單據。{% else %}建立獨立專案資料。{% endif %}</p>
   </div>
-  <a class="btn-secondary" href="{{ url_for('projects_list') }}">回專案列表</a>
+  <div class="inline-actions">
+    {% if project and active_order_count %}
+      <a class="btn" href="{{ url_for('projects_pdf', project_id=project.id) }}">匯出專案 PDF</a>
+    {% endif %}
+    <a class="btn-secondary" href="{{ url_for('projects_list') }}">回專案列表</a>
+  </div>
 </div>
 
 {% if not project %}
