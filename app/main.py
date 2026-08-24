@@ -23,6 +23,7 @@ from .backup import (
 from .database import (
     CUSTOMER_TYPES,
     DATA_ROOT,
+    LEGACY_CATEGORY_BY_CUSTOMER_TYPE,
     ORDER_STATUSES,
     PROJECT_STATUSES,
     QUOTE_STATUSES,
@@ -51,11 +52,11 @@ from .database import (
     today_key,
     update_customer_master,
 )
-from .pdf_export import build_document_pdf
+from .pdf_export import build_document_pdf, build_project_pdf
 
 app = Flask(__name__)
 app.secret_key = "printshop-v2.2-secret"
-APP_VERSION = "3.5.0"
+APP_VERSION = "3.7.1"
 
 
 @app.before_request
@@ -128,9 +129,11 @@ def calculate_totals(items, tax_mode="none", tax_rate=5):
 
 
 def pdf_download_name(document_label: str, document_number: str, customer_name: str) -> str:
+    safe_document = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", document_number or "").strip()
+    safe_document = re.sub(r"\s+", "_", safe_document)[:60]
     safe_customer = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", customer_name or "").strip()
     safe_customer = re.sub(r"\s+", "_", safe_customer)[:40]
-    parts = [document_label, document_number]
+    parts = [document_label, safe_document]
     if safe_customer:
         parts.append(safe_customer)
     return "_".join(parts) + ".pdf"
@@ -172,14 +175,13 @@ def display_date_filter(value):
 
 
 @app.template_filter("display_contact")
-def display_contact_filter(contact_person, customer_name):
-    return display_customer_contact(customer_name, contact_person)
+def display_contact_filter(contact_person, customer_name, customer_type=None):
+    return display_customer_contact(customer_name, contact_person, customer_type)
 
 
 @app.context_processor
 def inject_globals():
     return {
-        "customer_categories": ["一般", "學校", "政府", "公司", "宗親會"],
         "customer_types": CUSTOMER_TYPES,
         "quote_statuses": QUOTE_STATUSES,
         "order_statuses": ORDER_STATUSES,
@@ -446,7 +448,9 @@ def customers_list():
         rows = conn.execute("SELECT * FROM customers WHERE is_active = 1 ORDER BY id DESC").fetchall()
     customers = rows_dict(rows)
     for customer in customers:
-        customer["contact_person"] = display_customer_contact(customer["name"], customer["contact_person"])
+        customer["contact_person"] = display_customer_contact(
+            customer["name"], customer["contact_person"], customer["customer_type"]
+        )
     conn.close()
     return render_template("customers/list.html", customers=customers, q=q)
 
@@ -458,9 +462,9 @@ def customers_new():
         if not name:
             flash("客戶名稱不能空白。")
             return redirect(url_for("customers_new"))
-        customer_type = request.form.get("customer_type", "organization").strip()
+        customer_type = request.form.get("customer_type", "person").strip()
         if customer_type not in CUSTOMER_TYPES:
-            customer_type = "organization"
+            customer_type = "person"
         contact = clean_customer_contact(
             customer_type,
             name,
@@ -479,7 +483,7 @@ def customers_new():
                 request.form.get("tax_id", "").strip(),
                 request.form.get("phone", "").strip(),
                 request.form.get("email", "").strip(),
-                request.form.get("category", "一般"),
+                LEGACY_CATEGORY_BY_CUSTOMER_TYPE[customer_type],
                 request.form.get("note", "").strip(),
             ),
         )
@@ -1129,9 +1133,136 @@ def projects_detail(project_id):
         project_total=project_total,
         project_paid=project_paid,
         project_balance=project_balance,
+        active_order_count=sum(1 for order in orders if order["status"] != "廢單"),
         project_units=project_units,
         provisional_units=provisional_units,
         customers=[],
+    )
+
+
+@app.get("/projects/<int:project_id>/pdf")
+def projects_pdf(project_id):
+    conn = db()
+    project = conn.execute(
+        """
+        SELECT p.*, c.name AS customer_name, c.customer_type, c.contact_person,
+               c.tax_id, c.phone, c.email
+        FROM projects p
+        JOIN customers c ON c.id=p.customer_id
+        WHERE p.id=?
+        """,
+        (project_id,),
+    ).fetchone()
+    if not project:
+        conn.close()
+        abort(404)
+
+    orders = conn.execute(
+        """
+        SELECT * FROM orders
+        WHERE project_id=? AND status!='廢單'
+        ORDER BY id
+        """,
+        (project_id,),
+    ).fetchall()
+    if not orders:
+        conn.close()
+        flash("此專案目前沒有可匯出的有效訂單。")
+        return redirect(url_for("projects_detail", project_id=project_id))
+
+    groups: list[dict[str, Any]] = []
+    project_subtotal = 0.0
+    project_tax = 0.0
+    project_total = 0.0
+    project_paid = 0.0
+
+    for order in orders:
+        order_items = conn.execute(
+            "SELECT * FROM order_items WHERE order_id=? ORDER BY sort_order,id",
+            (order["id"],),
+        ).fetchall()
+        subtotal, tax_amount, total = calculate_totals(
+            order_items, order["tax_mode"], order["tax_rate"]
+        )
+        project_subtotal += float(subtotal)
+        project_tax += float(tax_amount)
+        project_total += float(total)
+        project_paid += float(
+            conn.execute(
+                "SELECT COALESCE(SUM(amount),0) AS total FROM order_payments WHERE order_id=?",
+                (order["id"],),
+            ).fetchone()["total"]
+            or 0
+        )
+
+        units = conn.execute(
+            """
+            SELECT * FROM order_work_units
+            WHERE order_id=?
+            ORDER BY sort_order,id
+            """,
+            (order["id"],),
+        ).fetchall()
+        for unit in units:
+            unit_items = conn.execute(
+                """
+                SELECT * FROM order_items
+                WHERE order_id=? AND work_unit_id=?
+                ORDER BY sort_order,id
+                """,
+                (order["id"], unit["id"]),
+            ).fetchall()
+            if not unit_items:
+                continue
+            groups.append(
+                {
+                    "name": unit["name"],
+                    "note": unit["note"] or "",
+                    "order_number": order["order_number"],
+                    "items": [dict(item) for item in unit_items],
+                    "subtotal": sum(float(item["subtotal"] or 0) for item in unit_items),
+                }
+            )
+
+        loose_items = conn.execute(
+            """
+            SELECT * FROM order_items
+            WHERE order_id=? AND work_unit_id IS NULL
+            ORDER BY sort_order,id
+            """,
+            (order["id"],),
+        ).fetchall()
+        if loose_items:
+            groups.append(
+                {
+                    "name": "未分工作單位",
+                    "note": "",
+                    "order_number": order["order_number"],
+                    "items": [dict(item) for item in loose_items],
+                    "subtotal": sum(float(item["subtotal"] or 0) for item in loose_items),
+                }
+            )
+
+    project_data = dict(project)
+    project_data["active_order_count"] = len(orders)
+    conn.close()
+
+    pdf_bytes = build_project_pdf(
+        project_data,
+        groups,
+        subtotal=project_subtotal,
+        tax_amount=project_tax,
+        total=project_total,
+        paid_total=project_paid,
+    )
+    return send_file(
+        BytesIO(pdf_bytes),
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=pdf_download_name(
+            "專案訂單", project["project_name"], project["customer_name"]
+        ),
+        max_age=0,
     )
 
 
@@ -1254,7 +1385,7 @@ def quotes_detail(quote_id):
     conn = db()
     quote = conn.execute(
         """
-        SELECT q.*, c.name AS customer_name, c.contact_person, c.tax_id, c.phone, c.email, p.project_name
+        SELECT q.*, c.name AS customer_name, c.customer_type, c.contact_person, c.tax_id, c.phone, c.email, p.project_name
         FROM quotes q
         JOIN customers c ON c.id = q.customer_id
         LEFT JOIN projects p ON p.id = q.project_id
@@ -1285,7 +1416,7 @@ def quotes_pdf(quote_id):
     conn = db()
     quote = conn.execute(
         """
-        SELECT q.*, c.name AS customer_name, c.contact_person, c.tax_id, c.phone, c.email,
+        SELECT q.*, c.name AS customer_name, c.customer_type, c.contact_person, c.tax_id, c.phone, c.email,
                p.project_name
         FROM quotes q
         JOIN customers c ON c.id = q.customer_id
@@ -1531,7 +1662,7 @@ def orders_detail(order_id):
     conn = db()
     order = conn.execute(
         """
-        SELECT o.*, c.name AS customer_name, c.contact_person, c.tax_id, c.phone, c.email,
+        SELECT o.*, c.name AS customer_name, c.customer_type, c.contact_person, c.tax_id, c.phone, c.email,
                p.project_name, q.quote_number
         FROM orders o
         JOIN customers c ON c.id = o.customer_id
@@ -1564,7 +1695,7 @@ def orders_pdf(order_id):
     conn = db()
     order = conn.execute(
         """
-        SELECT o.*, c.name AS customer_name, c.contact_person, c.tax_id, c.phone, c.email,
+        SELECT o.*, c.name AS customer_name, c.customer_type, c.contact_person, c.tax_id, c.phone, c.email,
                p.project_name, q.quote_number
         FROM orders o
         JOIN customers c ON c.id = o.customer_id
@@ -1858,7 +1989,7 @@ def api_order_history_detail(order_id):
     conn=db()
     order=conn.execute(
         """
-        SELECT o.*, c.name AS customer_name, c.contact_person, c.tax_id, c.phone,
+        SELECT o.*, c.name AS customer_name, c.customer_type, c.contact_person, c.tax_id, c.phone,
                COALESCE(p.project_name,'') AS project_name
         FROM orders o
         JOIN customers c ON c.id=o.customer_id
@@ -1888,7 +2019,9 @@ def api_order_history_detail(order_id):
     ).fetchone()["total"] or 0)
     order_data = dict(order)
     order_data["contact_person"] = display_customer_contact(
-        order_data["customer_name"], order_data["contact_person"]
+        order_data["customer_name"],
+        order_data["contact_person"],
+        order_data["customer_type"],
     )
     order_data["created_at_display"] = display_date(order["created_at"])
     conn.close()

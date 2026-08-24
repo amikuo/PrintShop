@@ -228,7 +228,7 @@
     modalContent.innerHTML=`
       <div class="dashboard-modal-customer">
         <div><span class="muted">客戶</span><strong>${esc(o.customer_name||'—')}</strong></div>
-        <div><span class="muted">聯絡人</span><strong>${esc(o.contact_person||'—')}</strong></div>
+        ${o.contact_person?`<div><span class="muted">聯絡人</span><strong>${esc(o.contact_person)}</strong></div>`:''}
         <div><span class="muted">電話</span><strong>${esc(o.phone||'—')}</strong></div>
         <div><span class="muted">統編</span><strong>${esc(o.tax_id||'—')}</strong></div>
       </div>

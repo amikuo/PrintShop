@@ -305,6 +305,7 @@ def _draw_sidebar(
     record: Mapping[str, Any] | Any,
     regular_font: str,
     bold_font: str,
+    customer_label: str = "顧客",
 ) -> None:
     pdf.setFillColor(SIDEBAR)
     pdf.rect(0, 0, SIDEBAR_WIDTH, PAGE_HEIGHT, fill=1, stroke=0)
@@ -330,7 +331,7 @@ def _draw_sidebar(
 
     pdf.setFillColor(INK)
     pdf.setFont(regular_font, 9)
-    pdf.drawString(left, 610, "顧客")
+    pdf.drawString(left, 610, customer_label)
     y = _draw_wrapped(
         pdf,
         _value(record, "customer_name", "—"),
@@ -346,6 +347,7 @@ def _draw_sidebar(
     contact = display_customer_contact(
         _value(record, "customer_name", ""),
         _value(record, "contact_person", ""),
+        _value(record, "customer_type", ""),
     )
     phone = str(_value(record, "phone", "")).strip()
     tax_id = str(_value(record, "tax_id", "")).strip()
@@ -412,13 +414,6 @@ def _draw_document_header(
         pdf.setFillColor(MUTED)
         pdf.setFont(regular_font, 8.3)
         pdf.drawRightString(MAIN_RIGHT, 718, f"交貨：{delivery}")
-
-    if is_order:
-        status = str(_value(record, "status", "")).strip()
-        if status:
-            pdf.setFillColor(MUTED)
-            pdf.setFont(regular_font, 8.3)
-            pdf.drawRightString(MAIN_RIGHT, 700, f"狀態：{status}")
 
     pdf.setFillColor(INK)
     pdf.setFont(regular_font, 9)
@@ -510,11 +505,14 @@ def _draw_totals(
     total: float,
     regular_font: str,
     bold_font: str,
+    *,
+    subtotal_label: str = "小計",
+    total_label: str = "總計",
 ) -> None:
     rows: list[tuple[str, float, str]] = [
-        ("小計", subtotal, "normal"),
+        (subtotal_label, subtotal, "normal"),
         ("外加稅", tax_amount, "normal"),
-        ("總計", total, "boxed"),
+        (total_label, total, "boxed"),
     ]
 
     row_height = 21
@@ -620,6 +618,355 @@ def build_document_pdf(
             pdf.setFillColor(MUTED)
             pdf.setFont(regular_font, 7.5)
             pdf.drawRightString(MAIN_RIGHT, INTERMEDIATE_BOTTOM - 14, "品項續下頁")
+
+        _draw_page_number(pdf, page_number, page_count, regular_font)
+        pdf.showPage()
+
+    pdf.save()
+    return output.getvalue()
+
+
+def _project_group_header_row(
+    group: Mapping[str, Any] | Any,
+    regular_font: str,
+    bold_font: str,
+    *,
+    continued: bool,
+) -> dict[str, Any]:
+    name = str(_value(group, "name", "未分工作單位")).strip() or "未分工作單位"
+    if continued:
+        name += "（續）"
+    title_width = MAIN_WIDTH - 160
+    title_lines = _wrap_text(name, bold_font, 9.5, title_width)[:2] or ["未分工作單位"]
+    note = str(_value(group, "note", "")).strip()
+    note_lines = _wrap_text(note, regular_font, 7.2, title_width)[:1] if note else []
+    height = max(30, 10 + len(title_lines) * 11 + len(note_lines) * 9)
+    return {
+        "kind": "group_header",
+        "name_lines": title_lines,
+        "note_lines": note_lines,
+        "order_number": str(_value(group, "order_number", "")).strip(),
+        "height": height,
+    }
+
+
+def _build_project_group_layouts(
+    groups: Sequence[Mapping[str, Any] | Any],
+    regular_font: str,
+    bold_font: str,
+) -> list[dict[str, Any]]:
+    layouts: list[dict[str, Any]] = []
+    for group in groups:
+        item_rows = _build_rows(_value(group, "items", []) or [], [], regular_font, bold_font)
+        for row in item_rows:
+            row["kind"] = "item"
+        layouts.append(
+            {
+                "group": group,
+                "item_rows": item_rows,
+                "subtotal_row": {
+                    "kind": "group_subtotal",
+                    "amount": _format_money(_value(group, "subtotal", 0)),
+                    "height": 24,
+                },
+            }
+        )
+    return layouts
+
+
+def _paginate_project_groups(
+    layouts: Sequence[dict[str, Any]],
+    regular_font: str,
+    bold_font: str,
+) -> list[list[dict[str, Any]]]:
+    if not layouts:
+        return [[]]
+
+    def attempt(capacities: Sequence[float]) -> list[list[dict[str, Any]]] | None:
+        pages: list[list[dict[str, Any]]] = []
+        group_index = 0
+        item_index = 0
+        continued = False
+
+        for capacity in capacities:
+            page: list[dict[str, Any]] = []
+            used = 0.0
+
+            while group_index < len(layouts):
+                layout = layouts[group_index]
+                item_rows = layout["item_rows"]
+                subtotal_row = layout["subtotal_row"]
+                header = _project_group_header_row(
+                    layout["group"], regular_font, bold_font, continued=continued
+                )
+
+                if item_index < len(item_rows):
+                    next_item = item_rows[item_index]
+                    is_last_item = item_index == len(item_rows) - 1
+                    minimum_body = float(next_item["height"])
+                    if is_last_item:
+                        minimum_body += float(subtotal_row["height"])
+                else:
+                    minimum_body = float(subtotal_row["height"])
+
+                minimum_block = float(header["height"]) + minimum_body
+                if page and used + minimum_block > capacity + 0.001:
+                    break
+                if used + minimum_block > capacity + 0.001:
+                    return None
+
+                page.append(header)
+                used += float(header["height"])
+
+                if not item_rows:
+                    page.append(subtotal_row)
+                    used += float(subtotal_row["height"])
+                    group_index += 1
+                    item_index = 0
+                    continued = False
+                    continue
+
+                added_item = False
+                group_finished = False
+                while item_index < len(item_rows):
+                    item = item_rows[item_index]
+                    is_last_item = item_index == len(item_rows) - 1
+                    required = float(item["height"])
+                    if is_last_item:
+                        required += float(subtotal_row["height"])
+                    if used + required > capacity + 0.001:
+                        if not added_item:
+                            return None
+                        continued = True
+                        break
+
+                    page.append(item)
+                    used += float(item["height"])
+                    item_index += 1
+                    added_item = True
+                    if is_last_item:
+                        page.append(subtotal_row)
+                        used += float(subtotal_row["height"])
+                        group_index += 1
+                        item_index = 0
+                        continued = False
+                        group_finished = True
+                        break
+
+                if not group_finished and continued:
+                    break
+
+            pages.append(page)
+            if group_index == len(layouts):
+                return pages
+
+        return None
+
+    maximum_pages = sum(max(1, len(layout["item_rows"])) for layout in layouts) + len(layouts) + 1
+    for page_count in range(1, maximum_pages + 1):
+        capacities = [TABLE_BODY_TOP - INTERMEDIATE_BOTTOM] * (page_count - 1)
+        capacities.append(TABLE_BODY_TOP - FINAL_ITEMS_BOTTOM)
+        pages = attempt(capacities)
+        if pages is not None:
+            return pages
+
+    raise ValueError("Project PDF rows cannot be paginated")
+
+
+def _draw_project_header(
+    pdf: canvas.Canvas,
+    project: Mapping[str, Any] | Any,
+    total: float,
+    paid_total: float,
+    regular_font: str,
+    bold_font: str,
+) -> None:
+    pdf.setFillColor(INK)
+    pdf.setFont(bold_font, 24)
+    pdf.drawRightString(MAIN_RIGHT, 772, "專案訂單")
+
+    label_x = MAIN_X + 2
+    value_x = MAIN_X + 76
+    pdf.setFont(regular_font, 8.8)
+    pdf.drawString(label_x, 744, "專案名稱")
+    pdf.setFont(regular_font, 10.5)
+    _draw_wrapped(
+        pdf,
+        _value(project, "project_name", "—"),
+        value_x,
+        744,
+        MAIN_RIGHT - value_x,
+        font_name=regular_font,
+        font_size=10.5,
+        line_height=12,
+        max_lines=1,
+    )
+
+    pdf.setFont(regular_font, 8.8)
+    pdf.drawString(label_x, 718, "建立日期")
+    pdf.setFont(regular_font, 10.5)
+    pdf.drawString(value_x, 718, _format_date(_value(project, "created_at", ""), stored_utc=True))
+
+    order_count = int(_value(project, "active_order_count", 0) or 0)
+    if order_count:
+        pdf.setFillColor(MUTED)
+        pdf.setFont(regular_font, 8.3)
+        pdf.drawRightString(MAIN_RIGHT, 718, f"有效訂單：{order_count} 張")
+
+    pdf.setFillColor(INK)
+    pdf.setFont(regular_font, 9)
+    pdf.drawString(label_x, 690, "應付")
+    amount_text = f"{_format_money(total)} NTD"
+    pdf.setFont(bold_font, 17)
+    pdf.drawString(label_x, 665, amount_text)
+
+    if paid_total > 0:
+        amount_width = pdfmetrics.stringWidth(amount_text, bold_font, 17)
+        paid_x = min(label_x + amount_width + 18, MAIN_RIGHT - 105)
+        pdf.setFillColor(MUTED)
+        pdf.setFont(regular_font, 7.5)
+        pdf.drawString(paid_x, 678, "已收款")
+        pdf.setFont(bold_font, 9)
+        pdf.drawString(paid_x, 663, f"{_format_money(paid_total)} NTD")
+
+
+def _draw_project_rows(
+    pdf: canvas.Canvas,
+    rows: Sequence[dict[str, Any]],
+    positions: Sequence[float],
+    regular_font: str,
+    bold_font: str,
+) -> None:
+    y = TABLE_BODY_TOP
+    for row in rows:
+        height = float(row["height"])
+        bottom = y - height
+        kind = row.get("kind")
+
+        if kind == "group_header":
+            pdf.setFillColor(SOFT_FILL)
+            pdf.rect(MAIN_X, bottom, MAIN_WIDTH, height, fill=1, stroke=0)
+            pdf.setStrokeColor(INK)
+            pdf.setLineWidth(0.6)
+            pdf.line(MAIN_X, y, MAIN_RIGHT, y)
+            pdf.line(MAIN_X, bottom, MAIN_RIGHT, bottom)
+
+            text_y = y - 14
+            pdf.setFillColor(INK)
+            for line in row["name_lines"]:
+                pdf.setFont(bold_font, 9.5)
+                pdf.drawString(MAIN_X + 7, text_y, line)
+                text_y -= 11
+            for line in row["note_lines"]:
+                pdf.setFillColor(MUTED)
+                pdf.setFont(regular_font, 7.2)
+                pdf.drawString(MAIN_X + 7, text_y, line)
+                text_y -= 9
+
+            meta = "｜".join(
+                value for value in (
+                    f"訂單 {row['order_number']}" if row["order_number"] else "",
+                ) if value
+            )
+            if meta:
+                pdf.setFillColor(MUTED)
+                pdf.setFont(regular_font, 7.4)
+                pdf.drawRightString(MAIN_RIGHT - 6, y - 14, meta)
+
+        elif kind == "group_subtotal":
+            pdf.setFillColor(SOFT_FILL)
+            pdf.rect(MAIN_X, bottom, MAIN_WIDTH, height, fill=1, stroke=0)
+            pdf.setStrokeColor(INK)
+            pdf.setLineWidth(0.7)
+            pdf.line(MAIN_X, bottom, MAIN_RIGHT, bottom)
+            baseline = y - 16
+            pdf.setFillColor(INK)
+            pdf.setFont(bold_font, 8.8)
+            pdf.drawRightString(positions[5] - 8, baseline, "單位小計")
+            pdf.setFont(regular_font, 8)
+            pdf.drawString(positions[5] + 4, baseline, "NT$")
+            pdf.setFont(bold_font, 8.8)
+            pdf.drawRightString(positions[6] - 4, baseline, row["amount"])
+
+        else:
+            pdf.setStrokeColor(LIGHT_LINE)
+            pdf.setLineWidth(0.35)
+            pdf.line(MAIN_X, bottom, MAIN_RIGHT, bottom)
+            baseline = y - 16
+            pdf.setFillColor(INK)
+            pdf.setFont(regular_font, 8.2)
+            pdf.drawCentredString((positions[0] + positions[1]) / 2, baseline, row["number"])
+
+            text_y = y - 12
+            for text, font_name, font_size, line_height in row["description"]:
+                pdf.setFont(font_name, font_size)
+                pdf.drawString(positions[1] + 5, text_y, text)
+                text_y -= line_height
+
+            pdf.setFont(regular_font, 8)
+            size_lines = _wrap_text(row["size"], regular_font, 8, positions[3] - positions[2] - 6)
+            size_y = y - 16
+            for line in size_lines:
+                pdf.drawCentredString((positions[2] + positions[3]) / 2, size_y, line)
+                size_y -= 10
+
+            pdf.drawRightString(positions[4] - 4, baseline, row["unit_price"])
+            pdf.drawCentredString((positions[4] + positions[5]) / 2, baseline, row["quantity"])
+            if row["amount"]:
+                pdf.drawString(positions[5] + 4, baseline, "NT$")
+                pdf.drawRightString(positions[6] - 4, baseline, row["amount"])
+
+        y = bottom
+
+    if not rows:
+        pdf.setFillColor(MUTED)
+        pdf.setFont(regular_font, 9)
+        pdf.drawCentredString((MAIN_X + MAIN_RIGHT) / 2, TABLE_BODY_TOP - 28, "尚無品項")
+
+
+def build_project_pdf(
+    project: Mapping[str, Any] | Any,
+    groups: Sequence[Mapping[str, Any] | Any],
+    *,
+    subtotal: float,
+    tax_amount: float,
+    total: float,
+    paid_total: float = 0,
+) -> bytes:
+    regular_font, bold_font = _register_fonts()
+    layouts = _build_project_group_layouts(groups, regular_font, bold_font)
+    pages = _paginate_project_groups(layouts, regular_font, bold_font)
+
+    output = BytesIO()
+    pdf = canvas.Canvas(output, pagesize=A4, pageCompression=1)
+    project_name = str(_value(project, "project_name", ""))
+    pdf.setTitle(f"專案訂單 {project_name}")
+    pdf.setAuthor("廣達數位印刷")
+    pdf.setSubject("PrintShop 專案訂單匯出文件")
+
+    page_count = len(pages)
+    for page_number, page_rows in enumerate(pages, start=1):
+        _draw_sidebar(pdf, project, regular_font, bold_font, customer_label="請款單位")
+        _draw_project_header(pdf, project, total, paid_total, regular_font, bold_font)
+        positions = _draw_table_header(pdf, regular_font, bold_font)
+        _draw_project_rows(pdf, page_rows, positions, regular_font, bold_font)
+
+        if page_number == page_count:
+            _draw_totals(
+                pdf,
+                subtotal,
+                tax_amount,
+                total,
+                regular_font,
+                bold_font,
+                subtotal_label="整案品項小計",
+                total_label="整案總計",
+            )
+            _draw_notes(pdf, regular_font)
+        else:
+            pdf.setFillColor(MUTED)
+            pdf.setFont(regular_font, 7.5)
+            pdf.drawRightString(MAIN_RIGHT, INTERMEDIATE_BOTTOM - 14, "專案內容續下頁")
 
         _draw_page_number(pdf, page_number, page_count, regular_font)
         pdf.showPage()

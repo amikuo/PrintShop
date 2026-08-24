@@ -9,7 +9,7 @@
 </div>
 
 <form method="post" class="card">
-  {% set selected_type = customer.customer_type if customer and customer.customer_type else 'organization' %}
+  {% set selected_type = customer.customer_type if customer and customer.customer_type in customer_types else 'person' %}
   <div class="field customer-type-field">
     <label>客戶類型 *</label>
     <div class="customer-type-options">
@@ -23,18 +23,11 @@
     <div class="muted small" id="customer-type-help"></div>
   </div>
   <div class="grid cols-3">
-    <div class="field"><label id="customer-name-label">公司／單位名稱 *</label><input name="name" value="{{ customer.name if customer else '' }}" required></div>
+    <div class="field"><label id="customer-name-label">姓名 *</label><input name="name" value="{{ customer.name if customer else '' }}" required></div>
     <div class="field" id="customer-contact-field"><label>聯絡人</label><input id="customer-contact-input" name="contact_person" value="{{ customer.contact_person if customer else '' }}"></div>
     <div class="field"><label>統編</label><input name="tax_id" value="{{ customer.tax_id if customer else '' }}"></div>
     <div class="field"><label>電話</label><input name="phone" value="{{ customer.phone if customer else '' }}"></div>
     <div class="field"><label>Email</label><input type="email" name="email" value="{{ customer.email if customer else '' }}"></div>
-    <div class="field"><label>分類</label>
-      <select name="category">
-        {% for c in customer_categories %}
-          <option value="{{ c }}" {% if customer and customer.category==c or (not customer and c=='一般') %}selected{% endif %}>{{ c }}</option>
-        {% endfor %}
-      </select>
-    </div>
   </div>
   <div class="field"><label>備註</label><textarea name="note">{{ customer.note if customer else '' }}</textarea></div>
   <div class="sticky-actions">
@@ -51,14 +44,26 @@
   const help = document.getElementById('customer-type-help');
 
   function refreshCustomerType() {
-    const type = document.querySelector('input[name="customer_type"]:checked')?.value || 'organization';
+    const type = document.querySelector('input[name="customer_type"]:checked')?.value || 'person';
     const isPerson = type === 'person';
-    nameLabel.textContent = isPerson ? '姓名 *' : '公司／單位名稱 *';
+    const nameLabels = {
+      person: '姓名 *',
+      school: '學校名稱 *',
+      government: '政府機關名稱 *',
+      company: '公司名稱 *',
+      association: '宗親會／協會名稱 *'
+    };
+    const helpTexts = {
+      person: '個人客戶只顯示一次姓名，不需要再填聯絡人。',
+      school: '先顯示學校名稱；聯絡人沒有固定時可以留白。',
+      government: '先顯示政府機關名稱；聯絡人沒有固定時可以留白。',
+      company: '先顯示公司名稱；聯絡人沒有固定時可以留白。',
+      association: '先顯示宗親會／協會名稱；聯絡人沒有固定時可以留白。'
+    };
+    nameLabel.textContent = nameLabels[type] || '姓名／所屬單位 *';
     contactField.hidden = isPerson;
     contactInput.disabled = isPerson;
-    help.textContent = isPerson
-      ? '個人客戶只顯示一次姓名，不需要再填聯絡人。'
-      : '公司或單位可另外填寫聯絡人；之後可在客戶管理修改名稱。';
+    help.textContent = helpTexts[type] || '聯絡人為選填。';
   }
 
   radios.forEach(radio => radio.addEventListener('change', refreshCustomerType));
