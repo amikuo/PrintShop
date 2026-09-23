@@ -37,17 +37,18 @@
       {% if wu.note %}<div class="muted" style="margin-top:6px">{{ wu.note }}</div>{% endif %}
       <div style="margin-top:12px" class="table-wrap">
         <table>
-          <thead><tr><th>品項</th><th>材質</th><th>尺寸</th><th>後加工</th><th>數量</th><th>單位</th><th>單價</th><th>小計</th></tr></thead>
+          <thead><tr><th>品項</th><th>材質</th><th>尺寸</th><th>後加工</th><th>每款數量</th><th>單位</th><th>款數</th><th>{{ '含稅單價' if order.tax_mode == 'inclusive' else ('未稅單價' if order.tax_mode in ['tax', 'calibrated'] else '單價') }}</th><th>{{ '含稅金額' if order.tax_mode == 'inclusive' else '小計' }}</th></tr></thead>
           <tbody>
             {% for item in items if item.work_unit_id == wu.id %}
               <tr>
                 <td><strong>{{ item.product_name }}</strong>{% if item.note %}<div class="muted small">{{ item.note }}</div>{% endif %}</td>
-                <td>{{ item.material or '—' }}</td>
+                <td class="material-text">{{ item.material or '—' }}</td>
                 <td>{{ item.size or '—' }}</td>
                 <td>{{ item.finishing or '—' }}</td>
-                <td>{{ item.quantity }}</td>
+                <td>{{ item.quantity|compact_number }}</td>
                 <td>{{ item.unit or '—' }}</td>
-                <td>{{ item.unit_price|money }}</td>
+                <td>{{ item.variant_count or 1 }} 款</td>
+                <td>{{ item.unit_price|price }}</td>
                 <td>{{ item.subtotal|money }}</td>
               </tr>
             {% endfor %}
@@ -60,17 +61,18 @@
   <div class="card">
     <div class="table-wrap">
       <table>
-        <thead><tr><th>品項</th><th>材質</th><th>尺寸</th><th>後加工</th><th>數量</th><th>單位</th><th>單價</th><th>小計</th></tr></thead>
+        <thead><tr><th>品項</th><th>材質</th><th>尺寸</th><th>後加工</th><th>每款數量</th><th>單位</th><th>款數</th><th>{{ '含稅單價' if order.tax_mode == 'inclusive' else ('未稅單價' if order.tax_mode in ['tax', 'calibrated'] else '單價') }}</th><th>{{ '含稅金額' if order.tax_mode == 'inclusive' else '小計' }}</th></tr></thead>
         <tbody>
           {% for item in items %}
             <tr>
               <td><strong>{{ item.product_name }}</strong>{% if item.note %}<div class="muted small">{{ item.note }}</div>{% endif %}</td>
-              <td>{{ item.material or '—' }}</td>
+              <td class="material-text">{{ item.material or '—' }}</td>
               <td>{{ item.size or '—' }}</td>
               <td>{{ item.finishing or '—' }}</td>
-              <td>{{ item.quantity }}</td>
+              <td>{{ item.quantity|compact_number }}</td>
               <td>{{ item.unit or '—' }}</td>
-              <td>{{ item.unit_price|money }}</td>
+              <td>{{ item.variant_count or 1 }} 款</td>
+              <td>{{ item.unit_price|price }}</td>
               <td>{{ item.subtotal|money }}</td>
             </tr>
           {% endfor %}
@@ -82,9 +84,9 @@
 
 <div class="summary transaction-total-summary">
   <div class="total-breakdown">
-    <div><span class="muted">品項小計</span><strong>NT$ {{ subtotal|money }}</strong></div>
-    <div><span class="muted">稅別</span><strong>{{ '計稅 5%' if order.tax_mode == 'tax' else '不計稅' }}</strong></div>
-    <div><span class="muted">稅額</span><strong>NT$ {{ tax_amount|money }}</strong></div>
+    <div><span class="muted">{{ '未稅金額' if order.tax_mode == 'inclusive' else '品項小計' }}</span><strong>NT$ {{ subtotal|money }}</strong></div>
+    <div><span class="muted">稅別</span><strong>{{ '含稅單價（5%）' if order.tax_mode == 'inclusive' else ('校準未稅明細（5%）' if order.tax_mode == 'calibrated' else ('外加稅 5%' if order.tax_mode == 'tax' else '不計稅')) }}</strong></div>
+    <div><span class="muted">{{ '內含稅額' if order.tax_mode == 'inclusive' else '稅額' }}</span><strong>NT$ {{ tax_amount|money }}</strong></div>
     <div class="grand-total"><span>總計</span><strong>NT$ {{ total|money }}</strong></div>
   </div>
   <div class="settlement-summary">
@@ -125,13 +127,17 @@
   <div class="card">
     <h2 style="margin-top:0">2. 客戶沖帳</h2>
     <p class="muted">可分次沖帳；每次會保留金額與時間紀錄。</p>
+    {% if balance > 0 %}
     <form method="post" action="{{ url_for('orders_payment', order_id=order.id) }}">
       <div class="grid cols-2">
-        <div class="field"><label>本次收款</label><input type="number" min="0.01" step="0.01" name="amount" required></div>
+        <div class="field"><label>本次收款</label><input type="number" min="0.01" step="0.01" max="{{ balance }}" name="amount" required></div>
         <div class="field"><label>備註</label><input name="note" placeholder="現金／匯款／其他"></div>
       </div>
       <button class="btn" type="submit">新增沖帳</button>
     </form>
+    {% else %}
+      <div class="settled-mark">✓ 此訂單已結清</div>
+    {% endif %}
     {% if payments %}
       <div class="payment-list">
         {% for p in payments %}

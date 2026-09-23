@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from datetime import datetime
@@ -53,10 +54,11 @@ from .database import (
     update_customer_master,
 )
 from .pdf_export import build_document_pdf, build_project_pdf
+from .pricing import calibrate
 
 app = Flask(__name__)
 app.secret_key = "printshop-v2.2-secret"
-APP_VERSION = "3.7.1"
+APP_VERSION = "3.11.1"
 
 
 @app.before_request
@@ -115,6 +117,9 @@ def parse_payload() -> dict[str, Any]:
         "created_date": request.form.get("created_date", "").strip(),
         "tax_mode": request.form.get("tax_mode", "none").strip() or "none",
         "tax_rate": 5,
+        "target_total": request.form.get("target_total", ""),
+        "adjustment_index": request.form.get("adjustment_index", ""),
+        "calibration_signature": request.form.get("calibration_signature", ""),
         "status": request.form.get("status", default_status).strip() or default_status,
         "items": items if mode != "project" else [],
         "work_units": work_units if mode == "project" else [],
@@ -124,8 +129,22 @@ def parse_payload() -> dict[str, Any]:
 
 def calculate_totals(items, tax_mode="none", tax_rate=5):
     subtotal = sum(float(r["subtotal"] or 0) for r in items)
-    tax = int(subtotal * 0.05 + 0.5) if tax_mode == "tax" else 0
+    if tax_mode == "inclusive":
+        tax = int(subtotal * float(tax_rate or 0) / (100 + float(tax_rate or 0)) + 0.5)
+        return subtotal - tax, tax, subtotal
+    tax = int(subtotal * (float(tax_rate or 0) / 100) + 0.5) if tax_mode in ("tax", "calibrated") else 0
     return subtotal, tax, subtotal + tax
+
+
+@app.post("/api/pricing/calibrate")
+def pricing_calibrate():
+    try:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            raise ValueError("表單資料格式不正確")
+        return jsonify(ok=True, **calibrate(payload))
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        return jsonify(ok=False, error=str(exc)), 400
 
 
 def pdf_download_name(document_label: str, document_number: str, customer_name: str) -> str:
@@ -164,9 +183,22 @@ def get_stats():
 @app.template_filter("money")
 def money(value):
     try:
-        return f"{float(value):,.0f}"
+        return f"{float(value):,.2f}".rstrip("0").rstrip(".")
     except Exception:
         return "0"
+
+
+@app.template_filter("compact_number")
+def compact_number(value):
+    try:
+        return f"{float(value):,.4f}".rstrip("0").rstrip(".")
+    except Exception:
+        return "0"
+
+
+@app.template_filter("price")
+def price_filter(value):
+    return f"{float(value or 0):,.10f}".rstrip("0").rstrip(".")
 
 
 @app.template_filter("display_date")
@@ -182,6 +214,7 @@ def display_contact_filter(contact_person, customer_name, customer_type=None):
 @app.context_processor
 def inject_globals():
     return {
+        "app_version": APP_VERSION,
         "customer_types": CUSTOMER_TYPES,
         "quote_statuses": QUOTE_STATUSES,
         "order_statuses": ORDER_STATUSES,
@@ -242,6 +275,10 @@ def index():
             type_priority ASC,
             delivery_priority ASC,
             CASE WHEN type_priority = 0 AND delivery_date IS NOT NULL AND delivery_date <> '' THEN date(delivery_date) END ASC,
+            CASE
+                WHEN type_priority = 2
+                THEN date(COALESCE(NULLIF(delivery_date, ''), created_at))
+            END DESC,
             created_at DESC,
             record_id DESC
         LIMIT 12
@@ -315,6 +352,7 @@ def api_dashboard_order_search():
             COALESCE(oi.size,'') AS size,
             COALESCE(oi.finishing,'') AS finishing,
             oi.quantity,
+            oi.variant_count,
             COALESCE(oi.unit,'') AS unit,
             oi.unit_price,
             oi.subtotal,
@@ -391,6 +429,7 @@ def api_dashboard_order_search():
                 "size": row["size"],
                 "finishing": row["finishing"],
                 "quantity": row["quantity"],
+                "variant_count": row["variant_count"] or 1,
                 "unit": row["unit"],
                 "unit_price": row["unit_price"],
                 "subtotal": row["subtotal"],
@@ -842,69 +881,32 @@ def api_projects_search():
 
 
 def refresh_project_status(conn, project_id):
-    """Project is complete only when every non-void order is complete and fully settled."""
+    """Keep project progress independent from payment settlement."""
     if not project_id:
         return "進行中"
 
-    orders = conn.execute(
-        "SELECT id,status,tax_mode,tax_rate FROM orders WHERE project_id=? AND status!='廢單' ORDER BY id",
-        (int(project_id),),
-    ).fetchall()
-
-    if not orders:
-        new_status = "進行中"
-    else:
-        all_complete = True
-        for order in orders:
-            if order["status"] != "完結":
-                all_complete = False
-                break
-
-            items = conn.execute(
-                "SELECT subtotal FROM order_items WHERE order_id=?",
-                (order["id"],),
-            ).fetchall()
-            subtotal = sum(float(x["subtotal"] or 0) for x in items)
-            tax = int(subtotal * 0.05 + 0.5) if order["tax_mode"] == "tax" else 0
-            total = subtotal + tax
-            paid = conn.execute(
-                "SELECT COALESCE(SUM(amount),0) AS s FROM order_payments WHERE order_id=?",
-                (order["id"],),
-            ).fetchone()["s"] or 0
-
-            if float(paid) + 0.000001 < float(total):
-                all_complete = False
-                break
-
-        new_status = "已完成" if all_complete else "進行中"
-
-    conn.execute(
-        "UPDATE projects SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-        (new_status, int(project_id)),
-    )
-    return new_status
-
-
-def project_return_url(project_id):
-    return url_for("projects_detail", project_id=int(project_id)) if project_id else None
-
-
-def sync_project_status(conn, project_id: int) -> str:
+    project_id = int(project_id)
     project = conn.execute("SELECT id,status FROM projects WHERE id=?", (project_id,)).fetchone()
     if not project:
         return ""
     orders = conn.execute("SELECT status FROM orders WHERE project_id=?", (project_id,)).fetchall()
     quotes = conn.execute("SELECT status,converted_order_id FROM quotes WHERE project_id=?", (project_id,)).fetchall()
     active_orders = [r for r in orders if r["status"] != "廢單"]
-    active_quotes = [r for r in quotes if r["status"] not in ("已取消","取消","廢單") and not r["converted_order_id"]]
+    active_quotes = [
+        r for r in quotes
+        if r["status"] in ("報價中", "已確認") and not r["converted_order_id"]
+    ]
     if (orders or quotes) and not active_orders and not active_quotes:
-        status="已取消"
+        status = "已取消"
     elif active_orders and all(r["status"]=="完結" for r in active_orders) and not active_quotes:
-        status="已完成"
+        status = "已完成"
     else:
-        status="進行中"
+        status = "進行中"
     if project["status"] != status:
-        conn.execute("UPDATE projects SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(status,project_id))
+        conn.execute(
+            "UPDATE projects SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (status, project_id),
+        )
     return status
 
 
@@ -915,7 +917,7 @@ def projects_list():
     q = request.args.get("q", "").strip()
     conn = db()
     for _p in conn.execute("SELECT id FROM projects").fetchall():
-        sync_project_status(conn, int(_p["id"]))
+        refresh_project_status(conn, int(_p["id"]))
     conn.commit()
     sql = """
         SELECT p.*, c.name AS customer_name,
@@ -971,7 +973,7 @@ def projects_new():
 def projects_detail(project_id):
     conn = db()
 
-    # Status is derived from current order progress + settlement.
+    # Project progress and payment settlement are deliberately independent.
     refresh_project_status(conn, project_id)
     conn.commit()
 
@@ -987,14 +989,6 @@ def projects_detail(project_id):
     if not project:
         conn.close()
         abort(404)
-
-    sync_project_status(conn, project_id)
-    conn.commit()
-    project = conn.execute("""
-        SELECT p.*, c.name AS customer_name
-        FROM projects p JOIN customers c ON c.id=p.customer_id
-        WHERE p.id=?
-    """, (project_id,)).fetchone()
 
     quotes = conn.execute(
         """
@@ -1216,7 +1210,7 @@ def projects_pdf(project_id):
                 continue
             groups.append(
                 {
-                    "name": unit["name"],
+                    "name": unit["name"] + ("（含稅單價／小計）" if order["tax_mode"] == "inclusive" else "（未稅／不計稅）"),
                     "note": unit["note"] or "",
                     "order_number": order["order_number"],
                     "items": [dict(item) for item in unit_items],
@@ -1235,7 +1229,7 @@ def projects_pdf(project_id):
         if loose_items:
             groups.append(
                 {
-                    "name": "未分工作單位",
+                    "name": "未分工作單位" + ("（含稅單價／小計）" if order["tax_mode"] == "inclusive" else "（未稅／不計稅）"),
                     "note": "",
                     "order_number": order["order_number"],
                     "items": [dict(item) for item in loose_items],
@@ -1276,12 +1270,21 @@ def projects_progress(project_id):
         conn.close(); abort(404)
     if action=="complete":
         conn.execute("UPDATE orders SET status='完結',updated_at=CURRENT_TIMESTAMP WHERE project_id=? AND status!='廢單'",(project_id,))
-        conn.execute("UPDATE projects SET status='已完成',updated_at=CURRENT_TIMESTAMP WHERE id=?",(project_id,))
+        refresh_project_status(conn, project_id)
         flash("專案進度已標記完成；收款狀態未變更。")
     elif action=="cancel":
-        conn.execute("UPDATE orders SET status='廢單',updated_at=CURRENT_TIMESTAMP WHERE project_id=? AND status!='廢單'",(project_id,))
+        conn.execute(
+            """
+            UPDATE orders
+               SET status='廢單',
+                   void_reason=CASE WHEN TRIM(COALESCE(void_reason,''))='' THEN '專案整案取消' ELSE void_reason END,
+                   updated_at=CURRENT_TIMESTAMP
+             WHERE project_id=? AND status!='廢單'
+            """,
+            (project_id,),
+        )
         conn.execute("UPDATE quotes SET status='已取消',updated_at=CURRENT_TIMESTAMP WHERE project_id=? AND converted_order_id IS NULL",(project_id,))
-        conn.execute("UPDATE projects SET status='已取消',updated_at=CURRENT_TIMESTAMP WHERE id=?",(project_id,))
+        refresh_project_status(conn, project_id)
         flash("專案進度已取消；收款紀錄未變更。")
     else:
         conn.close(); flash("不支援的專案進度操作。")
@@ -1292,20 +1295,59 @@ def projects_progress(project_id):
 
 @app.post("/projects/<int:project_id>/payment")
 def projects_payment(project_id):
-    conn=db()
-    if not conn.execute("SELECT id FROM projects WHERE id=?",(project_id,)).fetchone():
-        conn.close(); abort(404)
-    cols={r["name"] for r in conn.execute("PRAGMA table_info(orders)").fetchall()}
-    if "payment_status" in cols:
-        conn.execute("UPDATE orders SET payment_status='已收款',updated_at=CURRENT_TIMESTAMP WHERE project_id=? AND status!='廢單'",(project_id,))
-    elif "paid_amount" in cols and "grand_total" in cols:
-        conn.execute("UPDATE orders SET paid_amount=grand_total,updated_at=CURRENT_TIMESTAMP WHERE project_id=? AND status!='廢單'",(project_id,))
+    conn = db()
+    if not conn.execute("SELECT id FROM projects WHERE id=?", (project_id,)).fetchone():
+        conn.close()
+        abort(404)
+
+    try:
+        # Serialize settlement clicks so two devices cannot pay the same balance twice.
+        conn.execute("BEGIN IMMEDIATE")
+        orders = conn.execute(
+            """
+            SELECT id,tax_mode,tax_rate
+            FROM orders
+            WHERE project_id=? AND status!='廢單'
+            ORDER BY id
+            """,
+            (project_id,),
+        ).fetchall()
+        settled_count = 0
+        settled_total = 0.0
+        for order in orders:
+            items = conn.execute(
+                "SELECT subtotal FROM order_items WHERE order_id=?",
+                (order["id"],),
+            ).fetchall()
+            _, _, total = calculate_totals(items, order["tax_mode"], order["tax_rate"])
+            paid = float(conn.execute(
+                "SELECT COALESCE(SUM(amount),0) AS total FROM order_payments WHERE order_id=?",
+                (order["id"],),
+            ).fetchone()["total"] or 0)
+            balance = round(max(float(total) - paid, 0.0), 2)
+            if balance <= 0:
+                continue
+            conn.execute(
+                "INSERT INTO order_payments(order_id,amount,note) VALUES(?,?,?)",
+                (order["id"], balance, "專案整案結清"),
+            )
+            settled_count += 1
+            settled_total += balance
+
+        refresh_project_status(conn, project_id)
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        conn.close()
+        flash(f"整案結清失敗，未變更收款資料：{exc}")
+        return redirect(url_for("projects_detail", project_id=project_id))
+
+    conn.close()
+    if settled_count:
+        flash(f"整案結清完成：{settled_count} 張訂單，共 NT$ {settled_total:,.2f}；製作進度未變更。")
     else:
-        conn.close(); flash("目前資料庫尚無可用的訂單收款欄位，未變更任何資料。")
-        return redirect(url_for("projects_detail",project_id=project_id))
-    conn.commit(); conn.close()
-    flash("專案內有效訂單已批次沖帳；訂單進度未變更。")
-    return redirect(url_for("projects_detail",project_id=project_id))
+        flash("此專案目前沒有需要結清的有效訂單。")
+    return redirect(url_for("projects_detail", project_id=project_id))
 
 
 # ---------------- Quotes ----------------
@@ -1359,6 +1401,11 @@ def quotes_new():
             return redirect(url_for("quotes_new"))
         try:
             quote_id = create_quote_from_payload(conn, payload)
+            created_quote = conn.execute(
+                "SELECT project_id FROM quotes WHERE id=?", (quote_id,)
+            ).fetchone()
+            if created_quote and created_quote["project_id"]:
+                refresh_project_status(conn, created_quote["project_id"])
             conn.commit()
         except Exception as e:
             conn.rollback()
@@ -1476,7 +1523,14 @@ def quotes_edit(quote_id):
             flash("表單資料有誤。")
             return redirect(url_for("quotes_edit", quote_id=quote_id))
         try:
+            old_project_id = quote["project_id"]
             update_quote_from_payload(conn, quote_id, payload)
+            updated_quote = conn.execute(
+                "SELECT project_id FROM quotes WHERE id=?", (quote_id,)
+            ).fetchone()
+            new_project_id = updated_quote["project_id"] if updated_quote else None
+            for project_id in {old_project_id, new_project_id} - {None}:
+                refresh_project_status(conn, project_id)
             conn.commit()
         except Exception as e:
             conn.rollback()
@@ -1504,7 +1558,7 @@ def quotes_edit(quote_id):
 def quotes_delete(quote_id):
     conn = db()
     quote = conn.execute(
-        "SELECT id,quote_number,converted_order_id FROM quotes WHERE id=?",
+        "SELECT id,quote_number,converted_order_id,project_id FROM quotes WHERE id=?",
         (quote_id,)
     ).fetchone()
     if not quote:
@@ -1520,6 +1574,8 @@ def quotes_delete(quote_id):
         conn.execute("DELETE FROM quote_items WHERE quote_id=?", (quote_id,))
         conn.execute("DELETE FROM quote_work_units WHERE quote_id=?", (quote_id,))
         conn.execute("DELETE FROM quotes WHERE id=?", (quote_id,))
+        if quote["project_id"]:
+            refresh_project_status(conn, quote["project_id"])
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -1635,10 +1691,12 @@ def orders_edit(order_id):
             flash("表單資料有誤。")
             return redirect(url_for("orders_edit", order_id=order_id))
         try:
+            old_project_id = order["project_id"]
             update_order_from_payload(conn, order_id, payload)
             updated_order = conn.execute("SELECT project_id FROM orders WHERE id=?", (order_id,)).fetchone()
-            if updated_order and updated_order["project_id"]:
-                refresh_project_status(conn, updated_order["project_id"])
+            new_project_id = updated_order["project_id"] if updated_order else None
+            for project_id in {old_project_id, new_project_id} - {None}:
+                refresh_project_status(conn, project_id)
             conn.commit()
         except Exception as e:
             conn.rollback(); conn.close()
@@ -1771,19 +1829,41 @@ def orders_payment(order_id):
     note = request.form.get("note","").strip()
     return_project = request.form.get("return_project", "").strip()
     try:
-        amount = float(amount_text)
-        if amount <= 0:
+        amount = round(float(amount_text), 2)
+        if not math.isfinite(amount) or amount <= 0:
             raise ValueError
     except ValueError:
         flash("沖帳金額必須大於 0。")
         return redirect(url_for("projects_detail", project_id=return_project)) if return_project else redirect(url_for("orders_detail", order_id=order_id))
     conn = db()
-    order = conn.execute("SELECT id,status,project_id FROM orders WHERE id=?", (order_id,)).fetchone()
+    conn.execute("BEGIN IMMEDIATE")
+    order = conn.execute(
+        "SELECT id,status,project_id,tax_mode,tax_rate FROM orders WHERE id=?",
+        (order_id,),
+    ).fetchone()
     if not order:
-        conn.close(); abort(404)
+        conn.rollback(); conn.close(); abort(404)
     if order["status"] == "廢單":
-        conn.close()
+        conn.rollback(); conn.close()
         flash("廢單不可沖帳。")
+        return redirect(url_for("projects_detail", project_id=return_project)) if return_project else redirect(url_for("orders_detail", order_id=order_id))
+    items = conn.execute(
+        "SELECT subtotal FROM order_items WHERE order_id=?",
+        (order_id,),
+    ).fetchall()
+    _, _, total = calculate_totals(items, order["tax_mode"], order["tax_rate"])
+    paid_total = float(conn.execute(
+        "SELECT COALESCE(SUM(amount),0) AS total FROM order_payments WHERE order_id=?",
+        (order_id,),
+    ).fetchone()["total"] or 0)
+    balance = round(max(float(total) - paid_total, 0.0), 2)
+    if balance <= 0:
+        conn.rollback(); conn.close()
+        flash("此訂單已結清，不需再新增收款。")
+        return redirect(url_for("projects_detail", project_id=return_project)) if return_project else redirect(url_for("orders_detail", order_id=order_id))
+    if amount > balance:
+        conn.rollback(); conn.close()
+        flash(f"本次收款不可超過未收金額 NT$ {balance:,.2f}。")
         return redirect(url_for("projects_detail", project_id=return_project)) if return_project else redirect(url_for("orders_detail", order_id=order_id))
     conn.execute("INSERT INTO order_payments(order_id,amount,note) VALUES(?,?,?)", (order_id,amount,note))
     if order["project_id"]:
@@ -1962,9 +2042,9 @@ def api_orders_smart_search():
             COALESCE(oi.material,'') AS material,
             COALESCE(oi.size,'') AS size,
             COALESCE(oi.finishing,'') AS finishing,
-            oi.quantity, COALESCE(oi.unit,'') AS unit,
+            oi.quantity, oi.variant_count, COALESCE(oi.unit,'') AS unit,
             oi.unit_price, oi.subtotal, COALESCE(oi.note,'') AS note,
-            o.order_number, o.status AS order_status, o.created_at, o.delivery_date,
+            o.order_number, o.tax_mode, o.status AS order_status, o.created_at, o.delivery_date,
             c.name AS customer_name,
             COALESCE(p.project_name,'') AS project_name,
             COALESCE(ow.name,'') AS work_unit_name,

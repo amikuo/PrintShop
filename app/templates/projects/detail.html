@@ -56,7 +56,7 @@
     <div class="page-head" style="margin-bottom:12px">
       <div>
         <h2 style="margin:0">專案訂單控制</h2>
-        <p class="muted" style="margin:5px 0 0">常用的進度更新與沖帳直接在專案頁完成；只有修改交易內容時才進完整訂單頁。</p>
+        <p class="muted" style="margin:5px 0 0">常用的進度更新與收款直接在專案頁完成；製作進度與是否結清分開管理。</p>
       </div>
     </div>
     <div class="project-order-controls">
@@ -140,14 +140,14 @@
           </div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>品項</th><th>材質</th><th>尺寸</th><th>後加工</th><th>數量</th><th>單位</th><th>單價</th><th>小計</th></tr></thead>
+              <thead><tr><th>品項</th><th>材質</th><th>尺寸</th><th>後加工</th><th>每款數量</th><th>單位</th><th>款數</th><th>單價</th><th>小計</th></tr></thead>
               <tbody>
               {% for item in wu['items'] %}
                 <tr>
                   <td><strong>{{ item.product_name }}</strong>{% if item.note %}<div class="muted small">{{ item.note }}</div>{% endif %}</td>
-                  <td>{{ item.material or '—' }}</td><td>{{ item.size or '—' }}</td><td>{{ item.finishing or '—' }}</td>
-                  <td>{{ item.quantity }}</td><td>{{ item.unit or '—' }}</td>
-                  <td>{{ item.unit_price|money }}</td><td>{{ item.subtotal|money }}</td>
+                  <td class="material-text">{{ item.material or '—' }}</td><td>{{ item.size or '—' }}</td><td>{{ item.finishing or '—' }}</td>
+                  <td>{{ item.quantity|compact_number }}</td><td>{{ item.unit or '—' }}</td><td>{{ item.variant_count or 1 }} 款</td>
+                  <td>{{ item.unit_price|price }}</td><td>{{ item.subtotal|money }}</td>
                 </tr>
               {% else %}
                 <tr><td colspan="8" class="muted">此工作單位目前沒有品項。</td></tr>
@@ -171,12 +171,12 @@
           </div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>品項</th><th>材質</th><th>尺寸</th><th>後加工</th><th>數量</th><th>單位</th><th>單價</th><th>小計</th></tr></thead>
+              <thead><tr><th>品項</th><th>材質</th><th>尺寸</th><th>後加工</th><th>每款數量</th><th>單位</th><th>款數</th><th>單價</th><th>小計</th></tr></thead>
               <tbody>
               {% for item in wu['items'] %}
-                <tr><td><strong>{{ item.product_name }}</strong></td><td>{{ item.material or '—' }}</td><td>{{ item.size or '—' }}</td>
-                <td>{{ item.finishing or '—' }}</td><td>{{ item.quantity }}</td><td>{{ item.unit or '—' }}</td>
-                <td>{{ item.unit_price|money }}</td><td>{{ item.subtotal|money }}</td></tr>
+                <tr><td><strong>{{ item.product_name }}</strong></td><td class="material-text">{{ item.material or '—' }}</td><td>{{ item.size or '—' }}</td>
+                <td>{{ item.finishing or '—' }}</td><td>{{ item.quantity|compact_number }}</td><td>{{ item.unit or '—' }}</td><td>{{ item.variant_count or 1 }} 款</td>
+                <td>{{ item.unit_price|price }}</td><td>{{ item.subtotal|money }}</td></tr>
               {% endfor %}
               </tbody>
             </table>
@@ -202,8 +202,12 @@
           <form method="post" action="{{ url_for('projects_progress', project_id=project.id) }}" onsubmit="return confirm('確定取消整個專案？收款紀錄不變。')"><input type="hidden" name="action" value="cancel"><button class="btn-danger" type="submit">整案取消</button></form>
         </div>
       </section>
-      <section><h3>專案收款</h3><p class="muted">只處理有效訂單沖帳，不修改製作進度。</p>
-        <form method="post" action="{{ url_for('projects_payment', project_id=project.id) }}" onsubmit="return confirm('確定將此專案內有效訂單批次沖帳？訂單進度不會改變。')"><button class="btn-secondary" type="submit">整案沖帳</button></form>
+      <section><h3>專案收款</h3><p class="muted">一次補足每張有效訂單的未收金額，不修改製作進度。</p>
+        {% if project_balance > 0 and active_order_count %}
+          <form method="post" action="{{ url_for('projects_payment', project_id=project.id) }}" onsubmit="return confirm('確定整案結清 NT$ {{ project_balance|money }}？系統會分別為每張有效訂單補足未收金額，製作進度不會改變。')"><button class="btn-secondary" type="submit">整案結清（NT$ {{ project_balance|money }}）</button></form>
+        {% else %}
+          <div class="settled-mark">✓ 此專案目前無未收款</div>
+        {% endif %}
       </section>
     </div>
   </div>

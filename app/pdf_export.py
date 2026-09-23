@@ -17,8 +17,8 @@ from .database import display_customer_contact, display_date
 
 
 PAGE_WIDTH, PAGE_HEIGHT = A4
-SIDEBAR_WIDTH = 155
-MAIN_X = 168
+SIDEBAR_WIDTH = 135
+MAIN_X = 148
 MAIN_RIGHT = PAGE_WIDTH - 20
 MAIN_WIDTH = MAIN_RIGHT - MAIN_X
 
@@ -26,10 +26,10 @@ TABLE_TOP = 640
 TABLE_HEADER_HEIGHT = 23
 TABLE_BODY_TOP = TABLE_TOP - TABLE_HEADER_HEIGHT
 INTERMEDIATE_BOTTOM = 38
-FINAL_ITEMS_BOTTOM = 252
+FINAL_ITEMS_BOTTOM = 270
 
 NOTES_Y = 28
-NOTES_HEIGHT = 82
+NOTES_HEIGHT = 100
 
 INK = HexColor("#3e3a39")
 MUTED = HexColor("#777777")
@@ -112,6 +112,10 @@ def _format_quantity(value: Any) -> str:
     return f"{quantity:,.3f}".rstrip("0").rstrip(".")
 
 
+def _format_price(value: Any) -> str:
+    return f"{float(value or 0):,.10f}".rstrip("0").rstrip(".")
+
+
 def _format_date(value: Any, *, stored_utc: bool = False) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -181,8 +185,8 @@ def _description_lines(
 ) -> list[tuple[str, str, float, float]]:
     styled: list[tuple[str, str, float, float]] = []
     product = str(_value(item, "product_name", "未命名品項")).strip() or "未命名品項"
-    for line in _wrap_text(product, bold_font, 8.8, width):
-        styled.append((line, bold_font, 8.8, 11))
+    for line in _wrap_text(product, bold_font, 9, width):
+        styled.append((line, bold_font, 9, 12))
 
     details: list[str] = []
     if work_unit_name:
@@ -194,12 +198,15 @@ def _description_lines(
         details.append(f"材質：{material}")
     if finishing:
         details.append(f"加工：{finishing}")
+    variant_count = int(_value(item, "variant_count", 1) or 1)
+    if variant_count > 1:
+        details.append(f"共 {variant_count} 款")
     if note:
         details.append(f"備註：{note}")
     if details:
-        detail_text = "｜".join(details)
-        for line in _wrap_text(detail_text, regular_font, 7.2, width):
-            styled.append((line, regular_font, 7.2, 9))
+        detail_text = "\n".join(details)
+        for line in _wrap_text(detail_text, regular_font, 9, width):
+            styled.append((line, regular_font, 9, 12))
     return styled
 
 
@@ -214,7 +221,7 @@ def _build_rows(
         for unit in work_units
         if _value(unit, "id", None) is not None
     }
-    description_width = 132
+    description_width = 152
     rows: list[dict[str, Any]] = []
 
     for index, item in enumerate(items, start=1):
@@ -222,7 +229,7 @@ def _build_rows(
         work_unit_name = work_unit_names.get(int(work_unit_id), "") if work_unit_id else ""
         description = _description_lines(item, work_unit_name, regular_font, bold_font, description_width)
         if not description:
-            description = [("未命名品項", bold_font, 8.8, 11)]
+            description = [("未命名品項", bold_font, 9, 12)]
 
         # Extremely long notes are continued in a second table row instead of
         # being clipped or crossing a page boundary.
@@ -230,7 +237,7 @@ def _build_rows(
         remaining = description[14:]
         chunks = [first_chunk]
         while remaining:
-            chunks.append([(f"（續）{_value(item, 'product_name', '')}", bold_font, 8.0, 10)] + remaining[:13])
+            chunks.append([(f"（續）{_value(item, 'product_name', '')}", bold_font, 9, 12)] + remaining[:13])
             remaining = remaining[13:]
 
         for chunk_index, chunk in enumerate(chunks):
@@ -240,14 +247,14 @@ def _build_rows(
                 "number": str(index) if first else "",
                 "description": chunk,
                 "size": str(_value(item, "size", "")).strip() if first else "",
-                "unit_price": _format_money(_value(item, "unit_price", 0)) if first else "",
+                "unit_price": _format_price(_value(item, "unit_price", 0)) if first else "",
                 "quantity": (
                     f"{_format_quantity(_value(item, 'quantity', 0))} {str(_value(item, 'unit', '')).strip()}".strip()
                     if first
                     else ""
                 ),
                 "amount": _format_money(_value(item, "subtotal", 0)) if first else "",
-                "height": max(25, text_height + 10),
+                "height": max(28, text_height + 10, len(_wrap_text(str(_value(item, "size", "")), regular_font, 9, 56)) * 12 + 10, len(_wrap_text(_format_price(_value(item, "unit_price", 0)), regular_font, 9, 42)) * 12 + 10),
             }
             rows.append(row)
     return rows
@@ -323,7 +330,7 @@ def _draw_sidebar(
             mask="auto",
         )
 
-    left = 30
+    left = 18
     right = SIDEBAR_WIDTH - 10
     pdf.setStrokeColor(INK)
     pdf.setLineWidth(0.7)
@@ -366,15 +373,15 @@ def _draw_sidebar(
             min(y - 18, 492),
             right - left,
             font_name=bold_font,
-            font_size=8.8,
+            font_size=9,
             line_height=14,
             max_lines=6,
         )
 
     pdf.line(left, 91, right, 91)
-    pdf.setFont(regular_font, 8.8)
+    pdf.setFont(regular_font, 9)
     pdf.drawString(left, 77, "廣達數位印刷")
-    pdf.setFont(bold_font, 7.8)
+    pdf.setFont(bold_font, 9)
     pdf.drawString(left, 61, "嘉義市西區興達路200號")
     pdf.drawString(left, 45, "TEL：05-2326-333")
 
@@ -399,12 +406,12 @@ def _draw_document_header(
 
     label_x = MAIN_X + 2
     value_x = MAIN_X + 76
-    pdf.setFont(regular_font, 8.8)
+    pdf.setFont(regular_font, 9)
     pdf.drawString(label_x, 744, number_label)
     pdf.setFont(regular_font, 11)
     pdf.drawString(value_x, 744, str(_value(record, number_key, "—")))
 
-    pdf.setFont(regular_font, 8.8)
+    pdf.setFont(regular_font, 9)
     pdf.drawString(label_x, 718, "日期")
     pdf.setFont(regular_font, 10.5)
     pdf.drawString(value_x, 718, _format_date(_value(record, "created_at", ""), stored_utc=True))
@@ -412,7 +419,7 @@ def _draw_document_header(
     delivery = _format_date(_value(record, "delivery_date", ""))
     if delivery != "—":
         pdf.setFillColor(MUTED)
-        pdf.setFont(regular_font, 8.3)
+        pdf.setFont(regular_font, 9)
         pdf.drawRightString(MAIN_RIGHT, 718, f"交貨：{delivery}")
 
     pdf.setFillColor(INK)
@@ -426,14 +433,14 @@ def _draw_document_header(
         amount_width = pdfmetrics.stringWidth(amount_text, bold_font, 17)
         paid_x = min(label_x + amount_width + 18, MAIN_RIGHT - 105)
         pdf.setFillColor(MUTED)
-        pdf.setFont(regular_font, 7.5)
+        pdf.setFont(regular_font, 9)
         pdf.drawString(paid_x, 678, "已收款")
         pdf.setFont(bold_font, 9)
         pdf.drawString(paid_x, 663, f"{_format_money(paid_total)} NTD")
 
 
-def _draw_table_header(pdf: canvas.Canvas, regular_font: str, bold_font: str) -> list[float]:
-    widths = [26, 143, 62, 50, 47, MAIN_WIDTH - 328]
+def _draw_table_header(pdf: canvas.Canvas, regular_font: str, bold_font: str, inclusive: bool = False, calibrated: bool = False) -> list[float]:
+    widths = [26, 163, 62, 50, 47, MAIN_WIDTH - 348]
     positions = [MAIN_X]
     for width in widths:
         positions.append(positions[-1] + width)
@@ -442,14 +449,14 @@ def _draw_table_header(pdf: canvas.Canvas, regular_font: str, bold_font: str) ->
     pdf.setLineWidth(1.2)
     pdf.rect(MAIN_X, TABLE_TOP - TABLE_HEADER_HEIGHT, MAIN_WIDTH, TABLE_HEADER_HEIGHT, fill=0, stroke=1)
     pdf.setFillColor(INK)
-    pdf.setFont(bold_font, 8.5)
+    pdf.setFont(bold_font, 9)
     baseline = TABLE_TOP - 15
     pdf.drawCentredString((positions[0] + positions[1]) / 2, baseline, "序")
     pdf.drawString(positions[1] + 5, baseline, "商品敘述")
     pdf.drawCentredString((positions[2] + positions[3]) / 2, baseline, "規格")
-    pdf.drawRightString(positions[4] - 4, baseline, "單價")
+    pdf.drawRightString(positions[4] - 4, baseline, "含稅單價" if inclusive else ("未稅單價" if calibrated else "單價"))
     pdf.drawCentredString((positions[4] + positions[5]) / 2, baseline, "數量")
-    pdf.drawRightString(positions[6] - 4, baseline, "金額")
+    pdf.drawRightString(positions[6] - 4, baseline, "含稅金額" if inclusive else ("未稅金額" if calibrated else "金額"))
     return positions
 
 
@@ -469,7 +476,7 @@ def _draw_item_rows(
 
         baseline = y - 16
         pdf.setFillColor(INK)
-        pdf.setFont(regular_font, 8.2)
+        pdf.setFont(regular_font, 9)
         pdf.drawCentredString((positions[0] + positions[1]) / 2, baseline, row["number"])
 
         text_y = y - 12
@@ -478,14 +485,15 @@ def _draw_item_rows(
             pdf.drawString(positions[1] + 5, text_y, text)
             text_y -= line_height
 
-        pdf.setFont(regular_font, 8)
-        size_lines = _wrap_text(row["size"], regular_font, 8, positions[3] - positions[2] - 6)
+        pdf.setFont(regular_font, 9)
+        size_lines = _wrap_text(row["size"], regular_font, 9, positions[3] - positions[2] - 6)
         size_y = y - 16
         for line in size_lines:
             pdf.drawCentredString((positions[2] + positions[3]) / 2, size_y, line)
-            size_y -= 10
+            size_y -= 12
 
-        pdf.drawRightString(positions[4] - 4, baseline, row["unit_price"])
+        for price_index, price_line in enumerate(_wrap_text(row["unit_price"], regular_font, 9, positions[4] - positions[3] - 8)):
+            pdf.drawRightString(positions[4] - 4, baseline - price_index * 12, price_line)
         pdf.drawCentredString((positions[4] + positions[5]) / 2, baseline, row["quantity"])
         if row["amount"]:
             pdf.drawString(positions[5] + 4, baseline, "NT$")
@@ -508,12 +516,16 @@ def _draw_totals(
     *,
     subtotal_label: str = "小計",
     total_label: str = "總計",
+    tax_label: str = "外加稅",
+    total_only: bool = False,
 ) -> None:
     rows: list[tuple[str, float, str]] = [
         (subtotal_label, subtotal, "normal"),
-        ("外加稅", tax_amount, "normal"),
+        (tax_label, tax_amount, "normal"),
         (total_label, total, "boxed"),
     ]
+    if total_only:
+        rows = [(total_label, total, "boxed")]
 
     row_height = 21
     bottom = NOTES_Y + NOTES_HEIGHT + 16
@@ -538,7 +550,7 @@ def _draw_totals(
         pdf.setFillColor(INK)
         pdf.setFont(bold_font if style in {"boxed", "highlight"} else regular_font, 9)
         pdf.drawString(label_x, y + 3, label)
-        pdf.setFont(regular_font, 8.5)
+        pdf.setFont(regular_font, 9)
         pdf.drawString(currency_x, y + 3, "NT$")
         pdf.setFont(bold_font if style == "highlight" else regular_font, 9)
         pdf.drawRightString(MAIN_RIGHT - 4, y + 3, _format_money(amount))
@@ -547,7 +559,7 @@ def _draw_totals(
 
 def _draw_notes(pdf: canvas.Canvas, regular_font: str) -> None:
     pdf.setFillColor(INK)
-    pdf.setFont(regular_font, 8.5)
+    pdf.setFont(regular_font, 9)
     pdf.drawString(MAIN_X + 24, NOTES_Y + NOTES_HEIGHT + 5, "備註")
     pdf.setStrokeColor(INK)
     pdf.setLineWidth(0.7)
@@ -556,18 +568,18 @@ def _draw_notes(pdf: canvas.Canvas, regular_font: str) -> None:
     y = NOTES_Y + NOTES_HEIGHT - 14
     for note in FIXED_NOTES:
         pdf.setFillColor(INK)
-        pdf.setFont(regular_font, 7.2)
+        pdf.setFont(regular_font, 9)
         pdf.drawString(MAIN_X + 8, y, "※")
-        lines = _wrap_text(note, regular_font, 7.2, MAIN_WIDTH - 38)
+        lines = _wrap_text(note, regular_font, 9, MAIN_WIDTH - 38)
         for line in lines:
             pdf.drawString(MAIN_X + 27, y, line)
-            y -= 9
+            y -= 12
         y -= 3
 
 
 def _draw_page_number(pdf: canvas.Canvas, page_number: int, page_count: int, regular_font: str) -> None:
     pdf.setFillColor(MUTED)
-    pdf.setFont(regular_font, 7.5)
+    pdf.setFont(regular_font, 9)
     pdf.drawRightString(MAIN_RIGHT, 14, f"第 {page_number} / {page_count} 頁")
 
 
@@ -601,7 +613,7 @@ def build_document_pdf(
     for page_number, page_rows in enumerate(pages, start=1):
         _draw_sidebar(pdf, record, regular_font, bold_font)
         _draw_document_header(pdf, document_type, record, total, paid_total, regular_font, bold_font)
-        positions = _draw_table_header(pdf, regular_font, bold_font)
+        positions = _draw_table_header(pdf, regular_font, bold_font, _value(record, "tax_mode", "") == "inclusive", _value(record, "tax_mode", "") == "calibrated")
         _draw_item_rows(pdf, page_rows, positions, regular_font)
 
         if page_number == page_count:
@@ -612,11 +624,14 @@ def build_document_pdf(
                 total,
                 regular_font,
                 bold_font,
+                subtotal_label="未稅金額" if _value(record, "tax_mode", "") == "inclusive" else "小計",
+                tax_label="內含稅額" if _value(record, "tax_mode", "") == "inclusive" else "外加稅",
+                total_only=_value(record, "tax_mode", "") == "inclusive",
             )
             _draw_notes(pdf, regular_font)
         else:
             pdf.setFillColor(MUTED)
-            pdf.setFont(regular_font, 7.5)
+            pdf.setFont(regular_font, 9)
             pdf.drawRightString(MAIN_RIGHT, INTERMEDIATE_BOTTOM - 14, "品項續下頁")
 
         _draw_page_number(pdf, page_number, page_count, regular_font)
@@ -639,8 +654,8 @@ def _project_group_header_row(
     title_width = MAIN_WIDTH - 160
     title_lines = _wrap_text(name, bold_font, 9.5, title_width)[:2] or ["未分工作單位"]
     note = str(_value(group, "note", "")).strip()
-    note_lines = _wrap_text(note, regular_font, 7.2, title_width)[:1] if note else []
-    height = max(30, 10 + len(title_lines) * 11 + len(note_lines) * 9)
+    note_lines = _wrap_text(note, regular_font, 9, title_width)[:1] if note else []
+    height = max(30, 10 + len(title_lines) * 11 + len(note_lines) * 12)
     return {
         "kind": "group_header",
         "name_lines": title_lines,
@@ -688,7 +703,7 @@ def _paginate_project_groups(
         item_index = 0
         continued = False
 
-        for capacity in capacities:
+        for page_index, capacity in enumerate(capacities):
             page: list[dict[str, Any]] = []
             used = 0.0
 
@@ -696,6 +711,12 @@ def _paginate_project_groups(
                 layout = layouts[group_index]
                 item_rows = layout["item_rows"]
                 subtotal_row = layout["subtotal_row"]
+                # Keep the last item and its subtotal for the actual final page.
+                # A regular page has more capacity, but cannot become a final
+                # page without reserving space for totals and fixed notes.
+                if (page_index < len(capacities) - 1 and group_index == len(layouts) - 1
+                        and item_index >= len(item_rows) - 1):
+                    break
                 header = _project_group_header_row(
                     layout["group"], regular_font, bold_font, continued=continued
                 )
@@ -731,6 +752,10 @@ def _paginate_project_groups(
                 while item_index < len(item_rows):
                     item = item_rows[item_index]
                     is_last_item = item_index == len(item_rows) - 1
+                    if (is_last_item and group_index == len(layouts) - 1
+                            and page_index < len(capacities) - 1):
+                        continued = True
+                        break
                     required = float(item["height"])
                     if is_last_item:
                         required += float(subtotal_row["height"])
@@ -787,7 +812,7 @@ def _draw_project_header(
 
     label_x = MAIN_X + 2
     value_x = MAIN_X + 76
-    pdf.setFont(regular_font, 8.8)
+    pdf.setFont(regular_font, 9)
     pdf.drawString(label_x, 744, "專案名稱")
     pdf.setFont(regular_font, 10.5)
     _draw_wrapped(
@@ -802,7 +827,7 @@ def _draw_project_header(
         max_lines=1,
     )
 
-    pdf.setFont(regular_font, 8.8)
+    pdf.setFont(regular_font, 9)
     pdf.drawString(label_x, 718, "建立日期")
     pdf.setFont(regular_font, 10.5)
     pdf.drawString(value_x, 718, _format_date(_value(project, "created_at", ""), stored_utc=True))
@@ -810,7 +835,7 @@ def _draw_project_header(
     order_count = int(_value(project, "active_order_count", 0) or 0)
     if order_count:
         pdf.setFillColor(MUTED)
-        pdf.setFont(regular_font, 8.3)
+        pdf.setFont(regular_font, 9)
         pdf.drawRightString(MAIN_RIGHT, 718, f"有效訂單：{order_count} 張")
 
     pdf.setFillColor(INK)
@@ -824,7 +849,7 @@ def _draw_project_header(
         amount_width = pdfmetrics.stringWidth(amount_text, bold_font, 17)
         paid_x = min(label_x + amount_width + 18, MAIN_RIGHT - 105)
         pdf.setFillColor(MUTED)
-        pdf.setFont(regular_font, 7.5)
+        pdf.setFont(regular_font, 9)
         pdf.drawString(paid_x, 678, "已收款")
         pdf.setFont(bold_font, 9)
         pdf.drawString(paid_x, 663, f"{_format_money(paid_total)} NTD")
@@ -859,9 +884,9 @@ def _draw_project_rows(
                 text_y -= 11
             for line in row["note_lines"]:
                 pdf.setFillColor(MUTED)
-                pdf.setFont(regular_font, 7.2)
+                pdf.setFont(regular_font, 9)
                 pdf.drawString(MAIN_X + 7, text_y, line)
-                text_y -= 9
+                text_y -= 12
 
             meta = "｜".join(
                 value for value in (
@@ -870,7 +895,7 @@ def _draw_project_rows(
             )
             if meta:
                 pdf.setFillColor(MUTED)
-                pdf.setFont(regular_font, 7.4)
+                pdf.setFont(regular_font, 9)
                 pdf.drawRightString(MAIN_RIGHT - 6, y - 14, meta)
 
         elif kind == "group_subtotal":
@@ -881,11 +906,11 @@ def _draw_project_rows(
             pdf.line(MAIN_X, bottom, MAIN_RIGHT, bottom)
             baseline = y - 16
             pdf.setFillColor(INK)
-            pdf.setFont(bold_font, 8.8)
+            pdf.setFont(bold_font, 9)
             pdf.drawRightString(positions[5] - 8, baseline, "單位小計")
-            pdf.setFont(regular_font, 8)
+            pdf.setFont(regular_font, 9)
             pdf.drawString(positions[5] + 4, baseline, "NT$")
-            pdf.setFont(bold_font, 8.8)
+            pdf.setFont(bold_font, 9)
             pdf.drawRightString(positions[6] - 4, baseline, row["amount"])
 
         else:
@@ -894,7 +919,7 @@ def _draw_project_rows(
             pdf.line(MAIN_X, bottom, MAIN_RIGHT, bottom)
             baseline = y - 16
             pdf.setFillColor(INK)
-            pdf.setFont(regular_font, 8.2)
+            pdf.setFont(regular_font, 9)
             pdf.drawCentredString((positions[0] + positions[1]) / 2, baseline, row["number"])
 
             text_y = y - 12
@@ -903,14 +928,15 @@ def _draw_project_rows(
                 pdf.drawString(positions[1] + 5, text_y, text)
                 text_y -= line_height
 
-            pdf.setFont(regular_font, 8)
-            size_lines = _wrap_text(row["size"], regular_font, 8, positions[3] - positions[2] - 6)
+            pdf.setFont(regular_font, 9)
+            size_lines = _wrap_text(row["size"], regular_font, 9, positions[3] - positions[2] - 6)
             size_y = y - 16
             for line in size_lines:
                 pdf.drawCentredString((positions[2] + positions[3]) / 2, size_y, line)
-                size_y -= 10
+                size_y -= 12
 
-            pdf.drawRightString(positions[4] - 4, baseline, row["unit_price"])
+            for price_index, price_line in enumerate(_wrap_text(row["unit_price"], regular_font, 9, positions[4] - positions[3] - 8)):
+                pdf.drawRightString(positions[4] - 4, baseline - price_index * 12, price_line)
             pdf.drawCentredString((positions[4] + positions[5]) / 2, baseline, row["quantity"])
             if row["amount"]:
                 pdf.drawString(positions[5] + 4, baseline, "NT$")
@@ -959,13 +985,14 @@ def build_project_pdf(
                 total,
                 regular_font,
                 bold_font,
-                subtotal_label="整案品項小計",
+                subtotal_label="整案未稅小計",
+                tax_label="整案稅額",
                 total_label="整案總計",
             )
             _draw_notes(pdf, regular_font)
         else:
             pdf.setFillColor(MUTED)
-            pdf.setFont(regular_font, 7.5)
+            pdf.setFont(regular_font, 9)
             pdf.drawRightString(MAIN_RIGHT, INTERMEDIATE_BOTTOM - 14, "專案內容續下頁")
 
         _draw_page_number(pdf, page_number, page_count, regular_font)

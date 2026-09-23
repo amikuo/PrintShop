@@ -8,13 +8,14 @@ import os
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
+from .pricing import prepare as prepare_pricing, restore_source
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_ROOT = Path(os.environ.get("PRINTSHOP_DATA_DIR", BASE_DIR)).expanduser().resolve()
 DB_DIR = DATA_ROOT / "database"
 DB_PATH = DB_DIR / "printshop.db"
 BACKUP_DIR = DATA_ROOT / "backups"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 # V3.6 consolidates the former customer type and category into one field.
 # The physical category column remains for backward compatibility with older
@@ -48,6 +49,33 @@ def connect() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def _create_migration_backup(conn: sqlite3.Connection) -> Path:
+    """Create a verified snapshot before changing an existing database schema."""
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    destination = BACKUP_DIR / f"printshop_migration_{stamp}.db"
+    suffix = 1
+    while destination.exists():
+        destination = BACKUP_DIR / f"printshop_migration_{stamp}_{suffix}.db"
+        suffix += 1
+
+    target = sqlite3.connect(destination)
+    try:
+        conn.backup(target)
+        if target.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+            raise RuntimeError("資料庫升級前備份完整性檢查失敗。")
+    except Exception:
+        target.close()
+        destination.unlink(missing_ok=True)
+        raise
+    finally:
+        try:
+            target.close()
+        except Exception:
+            pass
+    return destination
 
 
 def row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -253,6 +281,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             size TEXT DEFAULT '',
             finishing TEXT DEFAULT '',
             quantity REAL NOT NULL DEFAULT 0,
+            variant_count INTEGER NOT NULL DEFAULT 1,
             unit TEXT DEFAULT '',
             unit_price REAL NOT NULL DEFAULT 0,
             subtotal REAL NOT NULL DEFAULT 0,
@@ -314,6 +343,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             size TEXT DEFAULT '',
             finishing TEXT DEFAULT '',
             quantity REAL NOT NULL DEFAULT 0,
+            variant_count INTEGER NOT NULL DEFAULT 1,
             unit TEXT DEFAULT '',
             unit_price REAL NOT NULL DEFAULT 0,
             subtotal REAL NOT NULL DEFAULT 0,
@@ -452,9 +482,17 @@ def _ensure_finishing_seed(conn: sqlite3.Connection) -> None:
 
 def init_database() -> None:
     conn = connect()
+    existing_table_count = int(conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM sqlite_master
+        WHERE type='table' AND name NOT LIKE 'sqlite_%'
+        """
+    ).fetchone()[0])
     has_migrations = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
     ).fetchone()
+    recorded_version = 0
     if has_migrations:
         recorded_version = int(conn.execute(
             "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations"
@@ -464,6 +502,12 @@ def init_database() -> None:
             raise RuntimeError(
                 f"資料庫 schema {recorded_version} 高於本程式支援的 {SCHEMA_VERSION}，請使用新版程式。"
             )
+    if existing_table_count and recorded_version < SCHEMA_VERSION:
+        try:
+            _create_migration_backup(conn)
+        except Exception:
+            conn.close()
+            raise
     ensure_schema(conn)
 
     # V2.3 hierarchical specification model
@@ -576,6 +620,10 @@ def init_database() -> None:
     _ensure_column("orders", "tax_mode", "TEXT NOT NULL DEFAULT 'none'")
     _ensure_column("orders", "tax_rate", "REAL NOT NULL DEFAULT 5")
     _ensure_column("orders", "void_reason", "TEXT DEFAULT ''")
+    _ensure_column("quote_items", "variant_count", "INTEGER NOT NULL DEFAULT 1")
+    _ensure_column("order_items", "variant_count", "INTEGER NOT NULL DEFAULT 1")
+    _ensure_column("quotes", "calibration_json", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column("orders", "calibration_json", "TEXT NOT NULL DEFAULT ''")
     conn.execute("UPDATE orders SET status='廢單' WHERE status='已取消'")
 
     # V3.0 migration baseline. Existing V2.x databases are upgraded in place;
@@ -632,6 +680,14 @@ def init_database() -> None:
         # still hide them.
         conn.execute("UPDATE customers SET customer_type='person'")
         conn.execute("INSERT INTO schema_migrations(version) VALUES (3)")
+        current_version = 3
+    if current_version < 4:
+        conn.execute("UPDATE quote_items SET variant_count=1 WHERE variant_count IS NULL OR variant_count < 1")
+        conn.execute("UPDATE order_items SET variant_count=1 WHERE variant_count IS NULL OR variant_count < 1")
+        conn.execute("INSERT INTO schema_migrations(version) VALUES (4)")
+
+    if current_version < 5:
+        conn.execute("INSERT INTO schema_migrations(version) VALUES (5)")
 
     conn.commit()
     conn.close()
@@ -820,6 +876,8 @@ def ensure_project(conn: sqlite3.Connection, payload: dict[str, Any], customer_i
 
 
 def save_quote_structure(conn: sqlite3.Connection, quote_id: int, payload: dict[str, Any]) -> None:
+    payload, calibration = prepare_pricing(payload)
+    conn.execute("UPDATE quotes SET calibration_json=? WHERE id=?", (calibration, quote_id))
     mode = payload.get("mode", "normal")
     if mode == "project":
         work_units = payload.get("work_units") or []
@@ -855,6 +913,8 @@ def save_quote_structure(conn: sqlite3.Connection, quote_id: int, payload: dict[
 
 
 def save_order_structure(conn: sqlite3.Connection, order_id: int, payload: dict[str, Any]) -> None:
+    payload, calibration = prepare_pricing(payload)
+    conn.execute("UPDATE orders SET calibration_json=? WHERE id=?", (calibration, order_id))
     mode = payload.get("mode", "normal")
     if mode == "project":
         work_units = payload.get("work_units") or []
@@ -903,7 +963,16 @@ def save_items(
             continue
         qty = float(item.get("quantity") or 0)
         unit_price = float(item.get("unit_price") or 0)
-        subtotal = qty * unit_price
+        raw_variant_count = item.get("variant_count", 1)
+        if raw_variant_count in (None, ""):
+            raw_variant_count = 1
+        variant_count_value = float(raw_variant_count)
+        if not variant_count_value.is_integer() or variant_count_value < 1:
+            raise ValueError("款數必須是大於或等於 1 的整數")
+        variant_count = int(variant_count_value)
+        subtotal = qty * unit_price * variant_count
+        if "_calibrated_subtotal" in item:
+            subtotal = item["_calibrated_subtotal"]
         cols = [
             parent_id_field,
             "work_unit_id",
@@ -913,6 +982,7 @@ def save_items(
             "size",
             "finishing",
             "quantity",
+            "variant_count",
             "unit",
             "unit_price",
             "subtotal",
@@ -929,6 +999,7 @@ def save_items(
             item.get("size", ""),
             item.get("finishing", ""),
             qty,
+            variant_count,
             item.get("unit", ""),
             unit_price,
             subtotal,
@@ -941,8 +1012,8 @@ def save_items(
                 """
                 INSERT INTO quote_items
                 (quote_id, work_unit_id, product_name, material, size, finishing,
-                 quantity, unit, unit_price, subtotal, note, sort_order)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 quantity, variant_count, unit, unit_price, subtotal, note, sort_order)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     parent_id,
@@ -952,6 +1023,7 @@ def save_items(
                     item.get("size", ""),
                     item.get("finishing", ""),
                     qty,
+                    variant_count,
                     item.get("unit", ""),
                     unit_price,
                     subtotal,
@@ -964,8 +1036,8 @@ def save_items(
                 """
                 INSERT INTO order_items
                 (order_id, work_unit_id, source_quote_item_id, product_name, material, size,
-                 finishing, quantity, unit, unit_price, subtotal, note, sort_order)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 finishing, quantity, variant_count, unit, unit_price, subtotal, note, sort_order)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     parent_id,
@@ -976,6 +1048,7 @@ def save_items(
                     item.get("size", ""),
                     item.get("finishing", ""),
                     qty,
+                    variant_count,
                     item.get("unit", ""),
                     unit_price,
                     subtotal,
@@ -1051,7 +1124,7 @@ def quote_to_payload(conn: sqlite3.Connection, quote_id: int) -> dict[str, Any]:
             (quote_id,),
         ).fetchall()
         payload["items"] = [dict(i) for i in items]
-    return payload
+    return restore_source(payload, quote)
 
 
 def order_to_payload(conn: sqlite3.Connection, order_id: int) -> dict[str, Any]:
@@ -1112,7 +1185,7 @@ def order_to_payload(conn: sqlite3.Connection, order_id: int) -> dict[str, Any]:
             (order_id,),
         ).fetchall()
         payload["items"] = [dict(i) for i in items]
-    return payload
+    return restore_source(payload, order)
 
 
 def create_quote_from_payload(conn: sqlite3.Connection, payload: dict[str, Any]) -> int:
@@ -1318,6 +1391,7 @@ def convert_quote_to_order(conn: sqlite3.Connection, quote_id: int) -> int:
     )
     order_id = int(cur.lastrowid)
     # copy structure without renumbering
+    conn.execute("UPDATE orders SET calibration_json=? WHERE id=?", (quote_row["calibration_json"], order_id))
     if quote_row["mode"] == "project":
         work_units = conn.execute(
             "SELECT * FROM quote_work_units WHERE quote_id = ? ORDER BY sort_order, id",
@@ -1343,8 +1417,8 @@ def convert_quote_to_order(conn: sqlite3.Connection, quote_id: int) -> int:
                 """
                 INSERT INTO order_items
                 (order_id, work_unit_id, source_quote_item_id, product_name, material, size,
-                 finishing, quantity, unit, unit_price, subtotal, note, sort_order)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 finishing, quantity, variant_count, unit, unit_price, subtotal, note, sort_order)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     order_id,
@@ -1355,6 +1429,7 @@ def convert_quote_to_order(conn: sqlite3.Connection, quote_id: int) -> int:
                     item["size"] or "",
                     item["finishing"] or "",
                     item["quantity"] or 0,
+                    item["variant_count"] if "variant_count" in item.keys() else 1,
                     item["unit"] or "",
                     item["unit_price"] or 0,
                     item["subtotal"] or 0,
@@ -1372,8 +1447,8 @@ def convert_quote_to_order(conn: sqlite3.Connection, quote_id: int) -> int:
                 """
                 INSERT INTO order_items
                 (order_id, work_unit_id, source_quote_item_id, product_name, material, size,
-                 finishing, quantity, unit, unit_price, subtotal, note, sort_order)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 finishing, quantity, variant_count, unit, unit_price, subtotal, note, sort_order)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     order_id,
@@ -1384,6 +1459,7 @@ def convert_quote_to_order(conn: sqlite3.Connection, quote_id: int) -> int:
                     item["size"] or "",
                     item["finishing"] or "",
                     item["quantity"] or 0,
+                    item["variant_count"] if "variant_count" in item.keys() else 1,
                     item["unit"] or "",
                     item["unit_price"] or 0,
                     item["subtotal"] or 0,
@@ -1465,6 +1541,7 @@ def search_order_items(conn: sqlite3.Connection, q: str, limit: int = 20) -> lis
             oi.size,
             oi.finishing,
             oi.quantity,
+            oi.variant_count,
             oi.unit,
             oi.unit_price,
             oi.subtotal,

@@ -56,8 +56,12 @@ class BackupTests(unittest.TestCase):
     def test_schema_version_and_safe_name(self):
         conn = database.connect()
         version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
+        quote_columns = {row["name"] for row in conn.execute("PRAGMA table_info(quote_items)")}
+        order_columns = {row["name"] for row in conn.execute("PRAGMA table_info(order_items)")}
         conn.close()
         self.assertEqual(version, database.SCHEMA_VERSION)
+        self.assertIn("variant_count", quote_columns)
+        self.assertIn("variant_count", order_columns)
         with self.assertRaises(ValueError):
             backup.resolve_backup("../printshop_20260817_120000.db")
 
@@ -70,6 +74,21 @@ class BackupTests(unittest.TestCase):
 
         database.init_database()
         self.assertEqual(self._customer_names(), ["V2.9.3 原有客戶"])
+        migration_backups = list(database.BACKUP_DIR.glob("printshop_migration_*.db"))
+        self.assertEqual(len(migration_backups), 1)
+        saved = sqlite3.connect(migration_backups[0])
+        try:
+            self.assertEqual(
+                saved.execute("SELECT name FROM customers").fetchone()[0],
+                "V2.9.3 原有客戶",
+            )
+            self.assertIsNone(saved.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+            ).fetchone())
+        finally:
+            saved.close()
+        listed = {item["name"]: item for item in backup.list_backups()}
+        self.assertEqual(listed[migration_backups[0].name]["type_label"], "資料庫升級前備份")
         conn = database.connect()
         self.assertEqual(
             conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0],
