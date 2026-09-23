@@ -48,13 +48,12 @@
 </section>
 
 <dialog id="dashboard-order-modal" class="history-order-modal dashboard-order-modal">
-  <div class="history-modal-head">
-    <div>
-      <h2 id="dashboard-modal-title">完整訂單內容</h2>
-      <div class="muted" id="dashboard-modal-meta"></div>
+    <div class="history-modal-head">
+      <div>
+        <h2 id="dashboard-modal-title">完整訂單內容</h2>
+        <div class="muted" id="dashboard-modal-meta"></div>
+      </div>
     </div>
-    <button type="button" class="btn-secondary" id="dashboard-modal-close-top">關閉</button>
-  </div>
   <div id="dashboard-modal-content"></div>
   <div class="dashboard-modal-nav">
     <button type="button" class="btn-secondary" id="dashboard-modal-prev">← 上一筆</button>
@@ -70,7 +69,7 @@
   <div class="page-head" style="margin-bottom:10px">
     <div>
       <h2 style="margin:0">近期工作</h2>
-      <p class="muted" style="margin:5px 0 0">未交訂單優先；訂單依交貨時間排序，逾期與近期交貨工作優先。Q 開頭代表尚未轉單的報價。</p>
+      <p class="muted" style="margin:5px 0 0">未交訂單優先並依交貨時間排序；完結訂單以近期交貨在前，未填交貨日才依建立日期。Q 開頭代表尚未轉單的報價。</p>
     </div>
     <a href="{{ url_for('orders_list') }}" class="btn-secondary">查看全部訂單</a>
   </div>
@@ -134,19 +133,19 @@
   const modalCache=new Map();
 
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const money=v=>'NT$ '+Number(v||0).toLocaleString('zh-TW',{maximumFractionDigits:0});
+  const money=v=>'NT$ '+Number(v||0).toLocaleString('zh-TW',{maximumFractionDigits:2});
 
   function renderResultItem(i){
     const specs=[i.material,i.size,i.finishing].filter(Boolean).map(esc).join('｜') || '無其他規格';
-    const quantity=`${i.quantity??''}${i.unit||''}`;
+    const quantity=`${i.quantity??''}${i.unit||''}${Number(i.variant_count||1)>1?`｜${Number(i.variant_count)}款`:''}`;
     return `<div class="dashboard-smart-item">
       <div class="dashboard-smart-item-main">
         <strong>${esc(i.work_unit_name?i.work_unit_name+'｜':'')}${esc(i.product_name)}</strong>
-        <span class="muted">${specs}</span>
+        <span class="muted material-text">${specs}</span>
         ${i.note?`<span class="dashboard-item-note">備註：${esc(i.note)}</span>`:''}
       </div>
       <span>${esc(quantity)}</span>
-      <div class="dashboard-smart-item-money"><span>單價 ${money(i.unit_price)}</span><strong>小計 ${money(i.subtotal)}</strong></div>
+      <div class="dashboard-smart-item-money"><span>單價 ${Number(i.unit_price || 0).toLocaleString('zh-TW', {maximumFractionDigits:10})}</span><strong>小計 ${money(i.subtotal)}</strong></div>
     </div>`;
   }
 
@@ -218,11 +217,12 @@
       <td>${index+1}</td>
       <td>${esc(item.work_unit_name||'—')}</td>
       <td><strong>${esc(item.product_name)}</strong>${item.note?`<div class="muted small">備註：${esc(item.note)}</div>`:''}</td>
-      <td>${esc(item.material||'—')}</td>
+      <td class="material-text">${esc(item.material||'—')}</td>
       <td>${esc(item.size||'—')}</td>
       <td>${esc(item.finishing||'—')}</td>
       <td>${esc(`${item.quantity??''}${item.unit||''}`)}</td>
-      <td>${money(item.unit_price)}</td>
+      <td>${esc(`${item.variant_count||1}款`)}</td>
+      <td>${Number(item.unit_price || 0).toLocaleString('zh-TW', {maximumFractionDigits:10})}</td>
       <td>${money(item.subtotal)}</td>
     </tr>`).join('');
     modalContent.innerHTML=`
@@ -234,8 +234,8 @@
       </div>
       ${o.note?`<div class="dashboard-modal-note"><strong>訂單備註</strong><div>${esc(o.note)}</div></div>`:''}
       <div class="table-wrap"><table class="history-modal-table">
-        <thead><tr><th>#</th><th>工作單位</th><th>品項</th><th>材質</th><th>尺寸</th><th>後加工</th><th>數量</th><th>單價</th><th>小計</th></tr></thead>
-        <tbody>${rows||'<tr><td colspan="9" class="muted">沒有品項內容。</td></tr>'}</tbody>
+        <thead><tr><th>#</th><th>工作單位</th><th>品項</th><th>材質</th><th>尺寸</th><th>後加工</th><th>每款數量</th><th>款數</th><th>單價</th><th>小計</th></tr></thead>
+        <tbody>${rows||'<tr><td colspan="10" class="muted">沒有品項內容。</td></tr>'}</tbody>
       </table></div>
       <div class="history-modal-total">
         <span>品項小計 <strong>${money(data.subtotal)}</strong></span>
@@ -281,7 +281,6 @@
   });
   modalPrev.addEventListener('click',()=>openModalAt(currentModalIndex-1));
   modalNext.addEventListener('click',()=>openModalAt(currentModalIndex+1));
-  document.getElementById('dashboard-modal-close-top').addEventListener('click',()=>modal.close());
   document.getElementById('dashboard-modal-close-bottom').addEventListener('click',()=>modal.close());
   modal.addEventListener('click',event=>{ if(event.target===modal) modal.close(); });
 })();

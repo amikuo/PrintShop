@@ -12,7 +12,7 @@ DAILY_RETENTION = 30
 MONTHLY_RETENTION = 12
 
 _BACKUP_NAME = re.compile(
-    r"^printshop_(?:(?P<kind>safety|daily|monthly)_)?\d{8}_\d{6}(?:_\d+)?\.db$"
+    r"^printshop_(?:(?P<kind>safety|migration|daily|monthly)_)?\d{8}_\d{6}(?:_\d+)?\.db$"
 )
 _operation_lock = Lock()
 _last_automatic_date: str | None = None
@@ -113,6 +113,7 @@ def list_backups() -> list[dict[str, object]]:
         labels = {
             "manual": "手動備份",
             "safety": "還原前保命備份",
+            "migration": "資料庫升級前備份",
             "daily": "每日自動備份",
             "monthly": "每月封存備份",
         }

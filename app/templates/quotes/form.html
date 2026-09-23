@@ -108,8 +108,10 @@
       <div>
         <div class="muted">稅別</div>
         <div class="quote-mode-row">
-          <label><input type="radio" name="tax_mode" value="none" {% if not draft or draft.tax_mode != 'tax' %}checked{% endif %}> 不計稅</label>
-          <label><input type="radio" name="tax_mode" value="tax" {% if draft and draft.tax_mode == 'tax' %}checked{% endif %}> 計稅（5%）</label>
+          <label><input type="radio" name="tax_mode" value="none" {% if not draft or draft.tax_mode == 'none' %}checked{% endif %}> 不計稅</label>
+          <label><input type="radio" name="tax_mode" value="tax" {% if draft and draft.tax_mode == 'tax' %}checked{% endif %}> 外加稅（5%）</label>
+          <label><input type="radio" name="tax_mode" value="inclusive" {% if draft and draft.tax_mode == 'inclusive' %}checked{% endif %}> 含稅單價</label>
+          <label><input type="radio" name="tax_mode" value="calibrated" {% if draft and draft.tax_mode == 'calibrated' %}checked{% endif %}> 指定含稅總額（未稅明細）</label>
         </div>
       </div>
     </div>
@@ -119,6 +121,7 @@
     </div>
   </section>
 
+  {% include '_calibration.html' %}
   <section class="quote-footer card">
     <div>
       <div class="muted">總計</div>
@@ -149,14 +152,14 @@
   <div class="quote-item js-item-row">
     <div class="quote-item-head">
       <div>品項</div><div>材質</div><div>尺寸</div><div>後加工</div>
-      <div>數量</div><div>單位</div><div>單價</div><div>小計</div>
+      <div>每款數量</div><div>單位</div><div class="js-price-label">單價</div><div>單款小計</div>
     </div>
     <div class="quote-item-fields">
       <div class="item-field item-search-wrap">
         <input class="js-product" autocomplete="off" placeholder="填寫搜尋">
         <div class="item-search-results js-product-results"></div>
       </div>
-      <div class="item-field"><input class="js-material" autocomplete="off" placeholder="填寫搜尋"></div>
+      <div class="item-field"><textarea class="js-material" rows="3" aria-label="材質"></textarea></div>
       <div class="item-field"><input class="js-size" autocomplete="off" placeholder="填寫搜尋"></div>
       <div class="item-field">
         <input class="js-finishing-input" autocomplete="off" placeholder="填寫搜尋">
@@ -165,10 +168,12 @@
       <div class="item-field"><input type="number" step="0.01" min="0" class="js-qty" value="1"></div>
       <div class="item-field"><input class="js-unit"></div>
       <div class="item-field"><input type="number" step="0.01" min="0" class="js-price" value="0"></div>
-      <div class="item-subtotal js-subtotal">NT$ 0</div>
+      <div class="item-subtotal js-single-subtotal">NT$ 0</div>
     </div>
     <div class="quote-item-note">
       <input class="js-note" placeholder="備註">
+      <label class="item-variant-count"><span>款數</span><input type="number" min="1" step="1" class="js-variant-count" value="1" inputmode="numeric"><span>款</span></label>
+      <div class="item-multi-total"><span>多款總計</span><strong class="js-subtotal">NT$ 0</strong></div>
       <button type="button" class="btn-danger-soft js-remove">刪除</button>
     </div>
   </div>
@@ -233,7 +238,10 @@
     activeRoot.querySelectorAll('.js-item-row').forEach(row => {
       const qty = Number(row.querySelector('.js-qty').value || 0);
       const price = Number(row.querySelector('.js-price').value || 0);
-      const subtotal = qty * price;
+      const variantCount = Math.max(1, Math.trunc(Number(row.querySelector('.js-variant-count').value || 1)));
+      const singleSubtotal = qty * price;
+      const subtotal = singleSubtotal * variantCount;
+      row.querySelector('.js-single-subtotal').textContent = money(singleSubtotal);
       row.querySelector('.js-subtotal').textContent = money(subtotal);
       subtotalTotal += subtotal;
     });
@@ -241,13 +249,19 @@
       if (activeRoot.contains(row)) return;
       const qty = Number(row.querySelector('.js-qty').value || 0);
       const price = Number(row.querySelector('.js-price').value || 0);
-      row.querySelector('.js-subtotal').textContent = money(qty * price);
+      const variantCount = Math.max(1, Math.trunc(Number(row.querySelector('.js-variant-count').value || 1)));
+      row.querySelector('.js-single-subtotal').textContent = money(qty * price);
+      row.querySelector('.js-subtotal').textContent = money(qty * price * variantCount);
     });
     const taxMode = document.querySelector('input[name="tax_mode"]:checked')?.value || 'none';
-    const tax = taxMode === 'tax' ? Math.round(subtotalTotal * 0.05) : 0;
-    itemsSubtotalEl.textContent = money(subtotalTotal);
+    const inclusive = taxMode === 'inclusive' || taxMode === 'calibrated';
+    const tax = inclusive ? Math.round(subtotalTotal * 5 / 105) : (taxMode === 'tax' ? Math.round(subtotalTotal * 0.05) : 0);
+    itemsSubtotalEl.textContent = money(inclusive ? subtotalTotal - tax : subtotalTotal);
+    itemsSubtotalEl.previousElementSibling.textContent = inclusive ? '未稅金額' : '品項小計';
+    taxAmountEl.previousElementSibling.textContent = inclusive ? '內含稅額' : '稅額';
+    document.querySelectorAll('.js-price-label').forEach(el => el.textContent = taxMode === 'calibrated' ? '約定含稅單價' : (inclusive ? '含稅單價' : (taxMode === 'tax' ? '未稅單價' : '單價')));
     taxAmountEl.textContent = money(tax);
-    totalEl.textContent = money(subtotalTotal + tax);
+    totalEl.textContent = money(inclusive ? subtotalTotal : subtotalTotal + tax);
   }
 
   function escapeHtml(v) {
@@ -320,9 +334,9 @@
             <strong>${escapeHtml(x.product_name)}</strong>
             <div class="muted small">${escapeHtml(x.customer_name)}｜${escapeHtml(x.order_number)}</div>
           </div>
-          <div class="smart-price">${money(x.unit_price)}</div>
+          <div class="smart-price">${Number(x.unit_price || 0).toLocaleString('zh-TW', {maximumFractionDigits:10})} ${x.tax_mode === 'inclusive' ? '含稅' : (['tax', 'calibrated'].includes(x.tax_mode) ? '未稅' : '不計稅')}</div>
         </div>
-        <div class="smart-spec">${[x.material,x.size,x.finishing,(x.quantity??'')+(x.unit||'')].filter(Boolean).map(escapeHtml).join('｜')}</div>
+        <div class="smart-spec">${[x.material,x.size,x.finishing,(x.quantity??'')+(x.unit||''),Number(x.variant_count||1)>1?`${Number(x.variant_count)}款`:null].filter(Boolean).map(escapeHtml).join('｜')}</div>
         <div class="muted small">${[x.project_name,x.work_unit_name,x.created_at?String(x.created_at).slice(0,10):''].filter(Boolean).map(escapeHtml).join('｜')}</div>
         <div class="smart-result-actions">
           <button type="button" class="btn-secondary smart-apply" data-json='${escapeHtml(JSON.stringify(x))}'>套用</button>
@@ -335,10 +349,15 @@
         const x=JSON.parse(btn.dataset.json);
         const row=currentSmartRow();
         if(!row) return;
+        const currentTax = document.querySelector('input[name="tax_mode"]:checked')?.value || 'none';
+        if ((x.tax_mode === 'inclusive') !== (['inclusive', 'calibrated'].includes(currentTax))) {
+          if (!window.confirm('歷史單價與目前單據的含稅方式不同。確定直接帶入此價格？請核對並調整單價。')) return;
+        }
         row.querySelector('.js-product').value=x.product_name||'';
         row.querySelector('.js-material').value=x.material||'';
         row.querySelector('.js-size').value=x.size||'';
         row.querySelector('.js-qty').value=x.quantity??1;
+        row.querySelector('.js-variant-count').value=x.variant_count??1;
         row.querySelector('.js-unit').value=x.unit||'';
         row.querySelector('.js-price').value=x.unit_price??0;
         row.querySelector('.js-note').value=x.note||'';
@@ -362,16 +381,17 @@
       <tr>
         <td>${escapeHtml(i.work_unit_name||'—')}</td>
         <td><strong>${escapeHtml(i.product_name)}</strong></td>
-        <td>${escapeHtml(i.material||'—')}</td>
+        <td class="material-text">${escapeHtml(i.material||'—')}</td>
         <td>${escapeHtml(i.size||'—')}</td>
         <td>${escapeHtml(i.finishing||'—')}</td>
         <td>${escapeHtml(i.quantity)} ${escapeHtml(i.unit||'')}</td>
-        <td>${money(i.unit_price)}</td>
+        <td>${escapeHtml(i.variant_count||1)} 款</td>
+        <td>${Number(i.unit_price || 0).toLocaleString('zh-TW', {maximumFractionDigits:10})}</td>
         <td>${money(i.subtotal)}</td>
       </tr>`).join('');
     document.getElementById('history-modal-body').innerHTML=`
       <div class="table-wrap"><table class="history-modal-table">
-        <thead><tr><th>工作單位</th><th>品項</th><th>材質</th><th>尺寸</th><th>後加工</th><th>數量</th><th>單價</th><th>小計</th></tr></thead>
+        <thead><tr><th>工作單位</th><th>品項</th><th>材質</th><th>尺寸</th><th>後加工</th><th>每款數量</th><th>款數</th><th>單價</th><th>小計</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div>
       <div class="history-modal-total">
@@ -470,6 +490,27 @@
   }
 
   function attachDatalist(input, rows, key) {
+    if (input.tagName === 'TEXTAREA') {
+      let select = input.parentElement.querySelector('.material-options');
+      if (!select) {
+        select = document.createElement('select');
+        select.className = 'material-options';
+        select.setAttribute('aria-label', '選用既有材質');
+        input.after(select);
+        select.onchange = () => {
+          if (!select.value) return;
+          const value = input.value;
+          input.value = value ? value.replace(/\s+$/, '') + '\n' + select.value : select.value;
+          select.value = '';
+          input.dispatchEvent(new Event('input', {bubbles: true}));
+          input.focus();
+        };
+      }
+      select.replaceChildren(new Option('選用材質（加入下一行）', ''));
+      rows.forEach(x => select.add(new Option(x[key], x[key])));
+      select.hidden = !rows.length;
+      return;
+    }
     let id = input.dataset.listId;
     let dl = id ? document.getElementById(id) : null;
     if (!dl) {
@@ -533,10 +574,12 @@
   function createItem(data = null) {
     const frag = itemTemplate.content.cloneNode(true);
     const row = frag.querySelector('.js-item-row');
+    row.querySelector('.js-price-label').textContent = document.querySelector('input[name="tax_mode"]:checked')?.value === 'inclusive' ? '含稅單價' : '單價';
     setupProductSearch(row);
     setupFinishingSearch(row);
     row.querySelector('.js-qty').addEventListener('input', () => { recalc(); markSmartTarget(row); });
     row.querySelector('.js-price').addEventListener('input', recalc);
+    row.querySelector('.js-variant-count').addEventListener('input', recalc);
     ['.js-product','.js-material','.js-size','.js-unit'].forEach(sel => {
       row.querySelector(sel).addEventListener('focus', () => markSmartTarget(row));
       row.querySelector(sel).addEventListener('input', () => scheduleSmartSearch(row));
@@ -556,6 +599,7 @@
       row.querySelector('.js-material').value = data.material || '';
       row.querySelector('.js-size').value = data.size || '';
       row.querySelector('.js-qty').value = data.quantity ?? 1;
+      row.querySelector('.js-variant-count').value = data.variant_count ?? 1;
       row.querySelector('.js-unit').value = data.unit || '';
       row.querySelector('.js-price').value = data.unit_price ?? 0;
       row.querySelector('.js-note').value = data.note || '';
@@ -750,6 +794,7 @@
       size: row.querySelector('.js-size').value.trim(),
       finishing: [...row.querySelectorAll('.finishing-tag')].map(x => (x.dataset.value || x.textContent.replace(/^#| ×$/g,''))).join(','),
       quantity: row.querySelector('.js-qty').value,
+      variant_count: row.querySelector('.js-variant-count').value,
       unit: row.querySelector('.js-unit').value.trim(),
       unit_price: row.querySelector('.js-price').value,
       note: row.querySelector('.js-note').value.trim()
@@ -768,4 +813,5 @@
   });
 })();
 </script>
+<script src="{{ url_for('static', filename='js/calibration.js', v=app_version) }}"></script>
 {% endblock %}

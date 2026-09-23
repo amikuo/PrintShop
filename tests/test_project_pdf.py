@@ -177,7 +177,7 @@ class ProjectPdfTests(unittest.TestCase):
         self.assertIn("未分工作單位", all_text)
         self.assertIn("（續）", all_text)
         self.assertEqual(all_text.count("單位小計"), 3)
-        self.assertIn("整案品項小計", page_texts[-1])
+        self.assertIn("整案未稅小計", page_texts[-1])
         self.assertIn("整案總計", page_texts[-1])
         self.assertIn("4,275", page_texts[-1])
         self.assertIn("已收款", all_text)

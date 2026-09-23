@@ -92,6 +92,37 @@ class PdfExportTests(unittest.TestCase):
         self.assertIn("成品裁切、成套、對位等可能有 ±2mm 誤差", text)
         self.assertIn("以上已包含排版製作稿件", text)
 
+    def test_quote_detail_hides_whole_quantity_decimal_and_keeps_real_decimals(self):
+        conn = database.connect()
+        quote_id = database.create_quote_from_payload(conn, {
+            "customer_name": "報價數字格式測試客戶",
+            "mode": "normal",
+            "items": [
+                {
+                    "product_name": "整數數量品項",
+                    "quantity": 200,
+                    "unit": "張",
+                    "unit_price": 2.5,
+                },
+                {
+                    "product_name": "小數數量品項",
+                    "quantity": 1.5,
+                    "unit": "式",
+                    "unit_price": 4.5,
+                },
+            ],
+        })
+        conn.commit()
+        conn.close()
+
+        page = self.client.get(f"/quotes/{quote_id}")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"<td>200</td>", page.data)
+        self.assertNotIn(b"<td>200.0</td>", page.data)
+        self.assertIn(b"<td>1.5</td>", page.data)
+        self.assertIn(b"<td>2.5</td>", page.data)
+        self.assertIn(b"<td>4.5</td>", page.data)
+
     def test_order_pdf_repeats_fixed_areas_and_shows_paid_balance(self):
         conn = database.connect()
         order_id = database.create_order_from_payload(conn, {

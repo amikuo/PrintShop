@@ -1,0 +1,13 @@
+<section id="calibration-panel" class="card" hidden>
+  <h3>校準未稅明細</h3>
+  <p>未稅單價從小數點後兩位開始驗算，必要時增加位數，使用能吻合品項金額的最少小數位數（最多十位）；不會只隱藏小數或暗中更改總額。</p>
+  <p>上方請填約定的含稅單價。先計算預覽，確認後再儲存；送出的單據會使用下方的未稅單價與金額。品項金額依「最終未稅單價 × 每款數量 × 款數」四捨五入到整元。</p>
+  <div class="row">
+    <label>指定含稅總額 <input type="number" min="0" step="1" name="target_total" id="calibration-target" placeholder="留白依品項含稅合計" value="{{ draft.target_total if draft and draft.target_total is not none else '' }}"></label>
+    <label>尾差調整品項 <select name="adjustment_index" id="calibration-item" data-initial="{{ draft.adjustment_index if draft and draft.adjustment_index is not none else '' }}"></select></label>
+    <button type="button" id="calibration-preview" class="btn-secondary">計算校準明細</button>
+  </div>
+  <div id="calibration-result" aria-live="polite"></div>
+  <label><input type="checkbox" id="calibration-confirm" disabled> 已核對未稅單價、各項金額、稅額及總額，依此送出報價／訂單</label>
+  <input type="hidden" name="calibration_signature" id="calibration-signature">
+</section>

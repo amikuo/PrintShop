@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ title or "PrintShop" }}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v=app_version) }}">
   <script defer src="{{ url_for('static', filename='js/app.js') }}"></script>
 </head>
 <body>
@@ -12,8 +12,8 @@
     <header class="topbar">
       <div class="topbar-inner">
         <div>
-          <div class="brand">PrintShop V3.7.1</div>
-          <div class="muted" style="color:#cbd5e1;font-size:12px">PDF 狀態隱藏版</div>
+          <div class="brand">PrintShop V{{ app_version|default('需重新啟動', true) }}</div>
+          <div class="muted" style="color:#cbd5e1;font-size:12px">報價開票金額校準版</div>
         </div>
         <nav class="topnav">
         <a href="{{ url_for('index') }}">總覽</a>

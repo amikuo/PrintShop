@@ -196,7 +196,7 @@ class CustomerMasterTests(unittest.TestCase):
                 "items": [self._item()],
             },
         )
-        conn.execute("DELETE FROM schema_migrations WHERE version=3")
+        conn.execute("DELETE FROM schema_migrations WHERE version>=3")
         conn.commit()
         conn.close()
 
@@ -211,7 +211,7 @@ class CustomerMasterTests(unittest.TestCase):
         self.assertEqual(customer["customer_type"], "person")
         self.assertEqual(customer["contact_person"], "王小姐")
         self.assertEqual(linked_customer_id, customer_id)
-        self.assertEqual(version, 3)
+        self.assertEqual(version, database.SCHEMA_VERSION)
 
         listing = self.client.get("/customers")
         self.assertNotIn("王小姐".encode("utf-8"), listing.data)

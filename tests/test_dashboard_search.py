@@ -96,11 +96,13 @@ class DashboardSearchTests(unittest.TestCase):
         self.assertIn("查看完整內容".encode(), page.data)
         self.assertIn("上一筆".encode(), page.data)
         self.assertIn("下一筆".encode(), page.data)
+        self.assertNotIn(b'id="dashboard-modal-close-top"', page.data)
+        self.assertIn(b'id="dashboard-modal-close-bottom"', page.data)
 
         health = self.client.get("/healthz").get_json()
         self.assertTrue(health["ok"])
         self.assertEqual(health["app"], "PrintShop")
-        self.assertEqual(health["version"], "3.7.1")
+        self.assertEqual(health["version"], "3.11.1")
         self.assertTrue(health["data_root"])
 
 

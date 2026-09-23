@@ -26,11 +26,12 @@ class HistoricalOrderTests(unittest.TestCase):
         database.BACKUP_DIR = self.old_backup_dir
         self.temp.cleanup()
 
-    def _create(self, name: str, created_date: str):
+    def _create(self, name: str, created_date: str, delivery_date: str = ""):
         conn = database.connect()
         order_id = database.create_order_from_payload(conn, {
             "customer_name": name,
             "created_date": created_date,
+            "delivery_date": delivery_date,
             "mode": "normal",
             "status": "完結",
             "items": [{
@@ -75,6 +76,55 @@ class HistoricalOrderTests(unittest.TestCase):
         self.assertIn(b'type="date"', response.data)
         self.assertIn(b'name="created_date"', response.data)
         self.assertNotIn(b'type="datetime-local"', response.data)
+
+    def test_order_detail_hides_whole_quantity_decimal_and_keeps_real_decimals(self):
+        conn = database.connect()
+        order_id = database.create_order_from_payload(conn, {
+            "customer_name": "數字格式測試客戶",
+            "created_date": "2026-08-20",
+            "mode": "normal",
+            "items": [
+                {
+                    "product_name": "整數數量品項",
+                    "quantity": 200,
+                    "unit": "張",
+                    "unit_price": 2.5,
+                },
+                {
+                    "product_name": "小數數量品項",
+                    "quantity": 1.5,
+                    "unit": "式",
+                    "unit_price": 4.5,
+                },
+            ],
+        })
+        conn.commit()
+        conn.close()
+
+        from app.main import app
+
+        app.config.update(TESTING=True)
+        page = app.test_client().get(f"/orders/{order_id}")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"<td>200</td>", page.data)
+        self.assertNotIn(b"<td>200.0</td>", page.data)
+        self.assertIn(b"<td>1.5</td>", page.data)
+        self.assertIn(b"<td>2.5</td>", page.data)
+        self.assertIn(b"<td>4.5</td>", page.data)
+
+    def test_home_completed_orders_use_delivery_date_before_created_date(self):
+        recent_delivery = self._create("近期交貨客戶", "2026-08-01", "2026-08-26")
+        historical_delivery = self._create("歷史交貨客戶", "2026-08-20", "2026-08-21")
+
+        from app.main import app
+
+        app.config.update(TESTING=True)
+        page = app.test_client().get("/")
+        self.assertEqual(page.status_code, 200)
+        self.assertLess(
+            page.data.index(recent_delivery["order_number"].encode()),
+            page.data.index(historical_delivery["order_number"].encode()),
+        )
 
 
 if __name__ == "__main__":
